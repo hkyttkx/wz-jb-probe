@@ -28,6 +28,7 @@ targets:
       - path: sources
       - path: sources/headers
       - path: sources/kif
+      - path: sources/taskrop
       - path: Vendor/imgui
       - path: Resources
     dependencies:
@@ -48,9 +49,9 @@ targets:
         PRODUCT_NAME: WZJBProbe
         GCC_PREFIX_HEADER: sources/prefix.pch
         HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/sources $(SRCROOT)/sources/headers $(SRCROOT)/sources/kif
-        LIBRARY_SEARCH_PATHS: $(inherited) $(SRCROOT)/Vendor/tbd
+        LIBRARY_SEARCH_PATHS: $(inherited) $(SRCROOT)/Vendor/tbd $(SRCROOT)/Vendor
         # 私有框架用 tbd 链接（GraphicsServices/BackBoardServices 等）
-        OTHER_LDFLAGS: $(inherited) -lGraphicsServices -lBackBoardServices -lSpringBoardServices -lAssertionServices
+        OTHER_LDFLAGS: $(inherited) -lGraphicsServices -lBackBoardServices -lSpringBoardServices -lAssertionServices -lxpf -lgrabkernel2
         LD_RUNPATH_SEARCH_PATHS: $(inherited) @executable_path
         # 关闭对私有 API 的检查（我们用了大量 SPI）
         CLANG_WARN_DOCUMENTATION_COMMENTS: NO
