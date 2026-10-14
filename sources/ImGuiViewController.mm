@@ -298,9 +298,3 @@ static bool ci_contains(const char *hay, const char *needle) {
 }
 
 @end
-ing];
-    [cb presentDrawable:view.currentDrawable];
-    [cb commit];
-}
-
-@end
