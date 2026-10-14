@@ -138,8 +138,8 @@ uint64_t ds_kreadsmrptr(uint64_t va) { return p_kreadsmr(va); }
 // kalloc 数组指针解码：低 4 位为 index，其余为 base
 uint64_t ds_kallocarrdec(uint64_t ptr) { return ptr & ~0xFULL; }
 
-uint64_t ds_get_kernel_base(void)  { return gSystemInfo.kernelConstant.base; }
-uint64_t ds_get_kernel_slide(void) { return gSystemInfo.kernelConstant.slide; }
+uint64_t ds_get_kernel_base(void)  { return kernel_base; }
+uint64_t ds_get_kernel_slide(void) { return kernel_slide; }
 
 uint64_t ds_get_pcbinfo(void)         { return 0; }   // DS 漏洞专用，越狱下不需要
 uint64_t ds_get_rw_socket_pcb(void)   { return 0; }
