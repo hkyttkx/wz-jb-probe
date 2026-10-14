@@ -1,6 +1,6 @@
 //
 //  ImGuiViewController.mm
-//  菜单式控制台：进程列表 / 选择目标 / 跨进程读取 / 输出
+//  可开关的 HUD：普通模式（App 内操作）/ 悬浮模式（覆盖游戏）
 //
 #import "ImGuiViewController.h"
 #import <MetalKit/MetalKit.h>
@@ -13,18 +13,14 @@
 #import <stdlib.h>
 #import <ctype.h>
 
-// libproc：自行声明（iOS SDK 无此头文件）
-extern "C" {
-int proc_listallpids(void *buffer, int buffersize);
-int proc_name(int pid, void *buffer, unsigned int buffersize);
-}
-
 #import "imgui.h"
 #import "imgui_impl_metal.h"
 #import "HUDWindow.h"
 
 extern char **environ;
 extern "C" {
+int proc_listallpids(void *buffer, int buffersize);
+int proc_name(int pid, void *buffer, unsigned int buffersize);
 int posix_spawnattr_set_persona_np(const posix_spawnattr_t * __restrict, uid_t, uint32_t);
 int posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t * __restrict, uid_t);
 int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t * __restrict, uid_t);
@@ -33,67 +29,52 @@ int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t * __restrict, uid
 typedef struct { int pid; char name[128]; } ProcEntry;
 #define MAXPROC 512
 
-// 大小写无关的子串匹配（iOS 的 string.h 不保证有 strcasestr）
-static bool ci_contains(const char *hay, const char *needle) {
-    if (!needle || !needle[0]) return true;
-    size_t nl = strlen(needle);
-    for (const char *p = hay; *p; p++) {
-        size_t i = 0;
-        while (i < nl && p[i] &&
-               tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i])) i++;
-        if (i == nl) return true;
-    }
-    return false;
-}
-
 @interface ImGuiViewController () <MTKViewDelegate>
 @property (nonatomic, strong) MTKView *mtkView;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
 @property (nonatomic, strong) NSString *outputText;
 @property (nonatomic, assign) BOOL busy;
-@property (nonatomic, assign) BOOL autoRefresh;
-@property (nonatomic, assign) BOOL showProbe;
 @end
 
 @implementation ImGuiViewController {
     ProcEntry _procs[MAXPROC];
     int  _procCount;
     int  _selRow;
-    char _filter[64];
     dispatch_source_t _timer;
-    BOOL _menuVisible;
+    BOOL _menuVisible;    // 悬浮模式下菜单是否展开
+    BOOL _overlayMode;    // 是否悬浮模式
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor blackColor];
+    self.view.backgroundColor = [UIColor clearColor];
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     self.mtkView = [[MTKView alloc] initWithFrame:self.view.bounds device:device];
     self.mtkView.delegate = self;
     self.mtkView.preferredFramesPerSecond = 60;
-    // 透明背景：本窗口是覆盖层
     self.mtkView.opaque = NO;
     self.mtkView.backgroundColor = [UIColor clearColor];
-    self.mtkView.clearColor = MTLClearColorMake(0, 0, 0, 0);
+    self.mtkView.clearColor = MTLClearColorMake(0.04, 0.04, 0.055, 0.92);  // 半透明底
     self.mtkView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.mtkView];
 
     self.commandQueue = [device newCommandQueue];
-    self.outputText = @"就绪。选择目标进程后点「读取目标」。";
-    self.autoRefresh = YES;
-    self.showProbe = NO;
+    self.outputText = @"选择目标进程 → 点「读取目标进程」。";
     _selRow = -1;
     _procCount = 0;
     _menuVisible = YES;
-    strlcpy(_filter, "", sizeof(_filter));
+    _overlayMode = NO;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
     ImGuiStyle &st = ImGui::GetStyle();
     st.WindowRounding = 8.0f;
-    st.FrameRounding = 5.0f;
+    st.FrameRounding  = 5.0f;
+    st.WindowBorderSize = 1.0f;
+    st.WindowPadding = ImVec2(14, 12);
+    st.ItemSpacing = ImVec2(10, 9);
     {
         ImGuiIO &io = ImGui::GetIO();
         io.Fonts->Clear();
@@ -105,7 +86,7 @@ static bool ci_contains(const char *hay, const char *needle) {
         b.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
         b.BuildRanges(&ranges);
         NSString *fp = [[NSBundle mainBundle] pathForResource:@"font" ofType:@"ttf"];
-        if (fp) io.Fonts->AddFontFromFileTTF(fp.UTF8String, 30.0f, &cfg, ranges.Data);
+        if (fp) io.Fonts->AddFontFromFileTTF(fp.UTF8String, 32.0f, &cfg, ranges.Data);
         else    io.Fonts->AddFontDefault();
         io.Fonts->Build();
     }
@@ -117,8 +98,13 @@ static bool ci_contains(const char *hay, const char *needle) {
     dispatch_source_set_timer(_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
                               NSEC_PER_SEC, 100 * NSEC_PER_MSEC);
     __weak typeof(self) ws = self;
-    dispatch_source_set_event_handler(_timer, ^{ if (ws.autoRefresh) [ws refreshProcs]; });
+    dispatch_source_set_event_handler(_timer, ^{ [ws refreshProcs]; });
     dispatch_resume(_timer);
+}
+
+- (HUDWindow *)hudWin {
+    UIWindow *w = self.view.window;
+    return [w isKindOfClass:[HUDWindow class]] ? (HUDWindow *)w : nil;
 }
 
 - (NSString *)outPath {
@@ -144,23 +130,17 @@ static bool ci_contains(const char *hay, const char *needle) {
     _procCount = cnt;
 }
 
-// 以 uid=0 起子进程执行任务；argv = 任务参数，结尾自动补输出文件路径
 - (void)runJob:(NSArray<NSString *> *)args {
     if (self.busy) return;
     self.busy = YES;
     self.outputText = @"执行中…";
-
     NSString *out = [self outPath];
     [[NSFileManager defaultManager] removeItemAtPath:out error:nil];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         char exe[PATH_MAX];
         uint32_t sz = sizeof(exe);
-        if (_NSGetExecutablePath(exe, &sz) != 0) {
-            self.outputText = @"取自身路径失败";
-            self.busy = NO;
-            return;
-        }
+        if (_NSGetExecutablePath(exe, &sz) != 0) { self.outputText = @"取路径失败"; self.busy = NO; return; }
 
         posix_spawnattr_t attr;
         posix_spawnattr_init(&attr);
@@ -168,8 +148,7 @@ static bool ci_contains(const char *hay, const char *needle) {
         posix_spawnattr_set_persona_uid_np(&attr, 0);
         posix_spawnattr_set_persona_gid_np(&attr, 0);
 
-        const char *argv[10];
-        int c = 0;
+        const char *argv[10]; int c = 0;
         argv[c++] = exe;
         for (NSString *a in args) argv[c++] = a.UTF8String;
         argv[c++] = out.UTF8String;
@@ -178,15 +157,8 @@ static bool ci_contains(const char *hay, const char *needle) {
         pid_t pid = 0;
         int rc = posix_spawn(&pid, exe, NULL, &attr, (char *const *)argv, environ);
         posix_spawnattr_destroy(&attr);
-
-        if (rc != 0) {
-            self.outputText = [NSString stringWithFormat:@"posix_spawn 失败 rc=%d (%s)", rc, strerror(rc)];
-            self.busy = NO;
-            return;
-        }
-        int stat = 0;
-        waitpid(pid, &stat, 0);
-
+        if (rc != 0) { self.outputText = [NSString stringWithFormat:@"spawn 失败 %d (%s)", rc, strerror(rc)]; self.busy = NO; return; }
+        int stat = 0; waitpid(pid, &stat, 0);
         NSString *res = [NSString stringWithContentsOfFile:out encoding:NSUTF8StringEncoding error:nil];
         self.outputText = res.length ? res : @"（无输出）";
         self.busy = NO;
@@ -195,19 +167,27 @@ static bool ci_contains(const char *hay, const char *needle) {
 
 #pragma mark - 界面
 
+- (void)setOverlay:(BOOL)on {
+    HUDWindow *win = [self hudWin];
+    if (win) HUDSetOverlayMode(win, on);
+    _overlayMode = on;
+    _menuVisible = !on;               // 进入悬浮先收起
+}
+
 - (void)drawUI {
     ImGuiIO &io = ImGui::GetIO();
     const float W = io.DisplaySize.x, H = io.DisplaySize.y;
 
-    // ── 收起态：只留一个小唤醒按钮 ──
-    if (!_menuVisible) {
-        ImGui::SetNextWindowPos(ImVec2(W - 260.0f, 150.0f), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(220.0f, 110.0f), ImGuiCond_Always);
+    // ── 悬浮模式 + 收起：只留一个小唤醒按钮 ──
+    if (_overlayMode && !_menuVisible) {
+        const float bw = 130.0f, bh = 130.0f;
+        ImGui::SetNextWindowPos(ImVec2(W - bw - 40.0f, 260.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(bw, bh), ImGuiCond_Always);
         ImGui::Begin("##mini", NULL,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                     ImGuiWindowFlags_NoSavedSettings);
-        if (ImGui::Button("显示菜单", ImVec2(190, 70))) {
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground);
+        if (ImGui::Button("菜单", ImVec2(bw - 16, bh - 16))) {
             _menuVisible = YES;
             HUDSetPassthrough(NO);
         }
@@ -215,87 +195,87 @@ static bool ci_contains(const char *hay, const char *needle) {
         return;
     }
 
-    const float padX = 45.0f, topY = 210.0f, statusH = 150.0f;
-    const float botY = H - statusH - 60.0f;
-
-    ImGui::SetNextWindowPos(ImVec2(padX, topY), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(W - padX * 2.0f, botY - topY), ImGuiCond_Always);
+    // ── 主面板（自适应大小、居中）──
+    const float pw = (W < 900.0f) ? (W - 80.0f) : 900.0f;
+    const float ph = (H < 1400.0f) ? (H - 200.0f) : 1180.0f;
+    ImGui::SetNextWindowPos(ImVec2((W - pw) * 0.5f, (H - ph) * 0.5f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
     ImGui::Begin("WZ 控制台", NULL, ImGuiWindowFlags_NoCollapse);
 
-    // ── 状态 + 收起按钮 ──
-    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "libjailbreak: 可用");
+    // 状态 + 模式切换
+    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "libjailbreak 可用");
     ImGui::SameLine();
-    ImGui::TextDisabled("| 载入 %d 个进程", _procCount);
-    ImGui::SameLine(ImGui::GetWindowWidth() - 240.0f);
-    if (ImGui::Button("收起菜单", ImVec2(200, 0))) {
-        _menuVisible = NO;
-        HUDSetPassthrough(YES);      // 收起后让触摸穿透到游戏
+    ImGui::TextDisabled("· %d 个进程", _procCount);
+
+    ImGui::SameLine(ImGui::GetWindowWidth() - ( _overlayMode ? 420.0f : 260.0f));
+    if (_overlayMode) {
+        if (ImGui::Button("收起", ImVec2(120, 0))) {
+            _menuVisible = NO;
+            HUDSetPassthrough(YES);       // 收起后触摸穿透，游戏可玩
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("退出悬浮", ImVec2(170, 0))) {
+            [self setOverlay:NO];
+        }
+    } else {
+        if (ImGui::Button("开启悬浮 HUD", ImVec2(240, 0))) {
+            [self setOverlay:YES];
+        }
     }
     ImGui::Separator();
 
-    // ── 进程选择 ──
-    if (ImGui::Button("刷新列表", ImVec2(150, 0))) [self refreshProcs];
+    // 进程列表
+    if (ImGui::Button("刷新", ImVec2(110, 0))) [self refreshProcs];
     ImGui::SameLine();
-    ImGui::Checkbox("自动刷新进程列表", &_autoRefresh);
-    ImGui::SameLine();
-    ImGui::TextDisabled("(共 %d 个)", _procCount);
+    ImGui::TextDisabled("点一行选中目标");
 
-    ImGui::Spacing();
-    ImGui::BeginChild("##proc", ImVec2(0, 330), true);
+    ImGui::BeginChild("##proc", ImVec2(0, ph * 0.42f), true);
     for (int i = 0; i < _procCount; i++) {
-        if (_filter[0] && !strcasestr(_procs[i].name, _filter)) continue;
-        char label[192];
-        snprintf(label, sizeof(label), "%5d  %s", _procs[i].pid, _procs[i].name);
-        bool sel = (_selRow == i);
-        if (ImGui::Selectable(label, sel)) _selRow = i;
+        char label[160];
+        snprintf(label, sizeof(label), "%5d   %s", _procs[i].pid, _procs[i].name);
+        if (ImGui::Selectable(label, _selRow == i)) _selRow = i;
     }
     ImGui::EndChild();
 
-    // ── 操作 ──
-    const char *selName = (_selRow >= 0 && _selRow < _procCount) ? _procs[_selRow].name : "(未选择)";
-    ImGui::Text("目标: %s", selName);
-    ImGui::SameLine();
-    if (_selRow >= 0) ImGui::TextDisabled("pid=%d", _procs[_selRow].pid);
+    // 目标 + 操作
+    if (_selRow >= 0 && _selRow < _procCount)
+        ImGui::Text("目标：%s  (pid=%d)", _procs[_selRow].name, _procs[_selRow].pid);
+    else
+        ImGui::TextDisabled("目标：（未选择）");
 
     ImGui::BeginDisabled(_selRow < 0 || self.busy);
-    if (ImGui::Button("读取目标进程", ImVec2(190, 0)) && _selRow >= 0) {
+    if (ImGui::Button("读取目标进程", ImVec2(230, 0)) && _selRow >= 0)
         [self runJob:@[ @"--read", [NSString stringWithFormat:@"%d", _procs[_selRow].pid] ]];
-    }
     ImGui::SameLine();
-    if (ImGui::Button("运行自检", ImVec2(150, 0))) {
+    if (ImGui::Button("自检", ImVec2(120, 0)))
         [self runJob:@[ @"--probe" ]];
-    }
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (self.busy) ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "执行中…");
 
-    ImGui::Separator();
-
-    // ── 输出 ──
+    // 输出
     ImGui::BeginChild("##out", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(self.outputText.UTF8String);
     ImGui::EndChild();
 
     ImGui::End();
 
-    // ── 底部状态条 ──
-    ImGui::SetNextWindowPos(ImVec2(padX, H - statusH), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(W - padX * 2.0f, statusH - 50.0f), ImGuiCond_Always);
-    ImGui::Begin("##status", NULL,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    // 底部状态
+    ImGui::SetNextWindowPos(ImVec2((W - pw) * 0.5f, (H + ph) * 0.5f - 96.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(pw, 60.0f), ImGuiCond_Always);
+    ImGui::Begin("##st", NULL,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                 ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::Text("ImGui %s", IMGUI_VERSION);
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "  %.1f FPS", io.Framerate);
+    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "  %.0f FPS", io.Framerate);
     ImGui::SameLine();
-    ImGui::TextDisabled("  Metal · Relaxin · iOS 17.1.2");
-    ImGui::TextDisabled("DisplaySize: %.0f x %.0f", W, H);
+    ImGui::TextDisabled("  %s · Metal", _overlayMode ? "悬浮模式" : "普通模式");
     ImGui::End();
 }
 
-#pragma mark - 触摸输入 → ImGui
-// ImGui 用统一的鼠标模型，iOS 触摸要手动喂进去
+#pragma mark - 触摸 → ImGui
 
 - (void)feedPos:(UITouch *)t {
     if (!t) return;
@@ -303,22 +283,16 @@ static bool ci_contains(const char *hay, const char *needle) {
     CGFloat sc = UIScreen.mainScreen.scale;
     ImGui::GetIO().AddMousePosEvent((float)(p.x * sc), (float)(p.y * sc));
 }
-
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [self feedPos:touches.anyObject];
-    ImGui::GetIO().AddMouseButtonEvent(0, true);
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)e {
+    [self feedPos:touches.anyObject]; ImGui::GetIO().AddMouseButtonEvent(0, true);
 }
-
-- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)e {
     [self feedPos:touches.anyObject];
 }
-
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [self feedPos:touches.anyObject];
-    ImGui::GetIO().AddMouseButtonEvent(0, false);
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)e {
+    [self feedPos:touches.anyObject]; ImGui::GetIO().AddMouseButtonEvent(0, false);
 }
-
-- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)e {
     ImGui::GetIO().AddMouseButtonEvent(0, false);
 }
 
@@ -328,12 +302,12 @@ static bool ci_contains(const char *hay, const char *needle) {
 
 - (void)drawInMTKView:(MTKView *)view {
     ImGuiIO &io = ImGui::GetIO();
-    CGSize drawable = view.drawableSize;
-    if (drawable.width < 1.0 || drawable.height < 1.0) {
+    CGSize d = view.drawableSize;
+    if (d.width < 1.0 || d.height < 1.0) {
         CGFloat sc = UIScreen.mainScreen.scale;
-        drawable = CGSizeMake(view.bounds.size.width * sc, view.bounds.size.height * sc);
+        d = CGSizeMake(view.bounds.size.width * sc, view.bounds.size.height * sc);
     }
-    io.DisplaySize = ImVec2(drawable.width, drawable.height);
+    io.DisplaySize = ImVec2(d.width, d.height);
     io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 
     id<MTLCommandBuffer> cb = [self.commandQueue commandBuffer];

@@ -19,19 +19,17 @@
 - (BOOL)application:(UIApplication *)application
         didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 
-    // 注意：ImGui 是全局单例上下文，只能有一份渲染视图，
-    // 所以直接把这个高层级窗口作为唯一窗口。
+    // ImGui 是全局单例上下文，只能有一份渲染视图，所以用唯一窗口承载。
+    // 默认 = 普通 App 窗口（可正常退出/切后台），
+    // 用户点「开启悬浮 HUD」后才提升层级并注册到 SpringBoard。
     self.hudWindow = [[HUDWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    self.hudWindow.windowLevel = 10000010.0;          // 高于游戏窗口
-    self.hudWindow.backgroundColor = [UIColor clearColor];
+    self.hudWindow.windowLevel = UIWindowLevelNormal;   // 默认不覆盖
+    self.hudWindow.backgroundColor = [UIColor blackColor];
     self.hudWindow.rootViewController = [[ImGuiViewController alloc] init];
     self.hudWindow.hidden = NO;
     [self.hudWindow makeKeyAndVisible];
 
-    // 注册到 SpringBoard 的窗口托管服务
-    BOOL ok = HUDRegisterWindow(self.hudWindow);
-    os_log(OS_LOG_DEFAULT, "[WZ] HUD register = %d", ok);
-
+    os_log(OS_LOG_DEFAULT, "[WZ] 启动（普通模式）");
     self.window = self.hudWindow;
 
     // 静音音频保活：让进程在后台不被挂起，HUD 才能一直贴在游戏上

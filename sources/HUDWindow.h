@@ -7,7 +7,7 @@
 @interface HUDWindow : UIWindow
 @end
 
-// 注册到 SpringBoard 的窗口托管服务（Superman 同款机制）
+// 注册到 SpringBoard 的窗口托管服务
 @interface SBSAccessibilityWindowHostingController : NSObject
 - (void)registerWindowWithContextID:(unsigned int)contextID atLevel:(double)level;
 @end
@@ -16,14 +16,20 @@
 - (unsigned int)_contextId;
 @end
 
-// 触摸穿透控制（YES = 点到下层游戏）
-// 注意：这些是 C 函数，.mm(C++) 里需要 extern "C" 才不会被 C++ 修饰
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// 触摸穿透控制（YES = 点到下层，游戏可操作）
 void HUDSetPassthrough(BOOL v);
 BOOL HUDGetPassthrough(void);
+
+// 注册/取消注册到 SpringBoard
 BOOL HUDRegisterWindow(HUDWindow *win);
+
+// 覆盖模式开关：YES=悬浮在所有 App 之上；NO=普通 App 窗口
+void HUDSetOverlayMode(HUDWindow *win, BOOL overlay);
+
 #ifdef __cplusplus
 }
 #endif
