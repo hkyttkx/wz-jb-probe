@@ -431,41 +431,126 @@ static const float kBtnW = 250.0f;
 - (void)drawStartPage {
     ImGuiIO &io = ImGui::GetIO();
     const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+    const float sc = UIScreen.mainScreen.scale;
+
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(W, H), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f,0.06f,0.09f,1.0f));
     ImGui::Begin("##start", NULL,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
                  ImGuiWindowFlags_NoSavedSettings);
     ImDrawList *dl = ImGui::GetWindowDrawList();
+
+    // 背景渐变
+    dl->AddRectFilledMultiColor(ImVec2(0,0), ImVec2(W,H),
+        IM_COL32(14,20,38,255), IM_COL32(24,16,40,255),
+        IM_COL32(10,14,28,255), IM_COL32(18,12,32,255));
+
+    // 顶部装饰光斑
+    dl->AddCircleFilled(ImVec2(W*0.5f, H*0.18f), W*0.42f,
+                        IM_COL32(60,120,220,26), 64);
+    dl->AddCircleFilled(ImVec2(W*0.5f, H*0.18f), W*0.28f,
+                        IM_COL32(90,160,255,22), 64);
+
     // 标题
-    const char *title = "WZ HUD";
-    ImVec2 ts = ImGui::CalcTextSize(title);
-    dl->AddText(ImVec2((W - ts.x) * 0.5f, H * 0.30f),
-                IM_COL32(120, 200, 255, 255), title);
-    const char *sub = "跨进程读取 · 绘制";
-    ImVec2 ss = ImGui::CalcTextSize(sub);
-    dl->AddText(ImVec2((W - ss.x) * 0.5f, H * 0.30f + 55.0f),
-                IM_COL32(130, 140, 155, 255), sub);
-    // 启动按钮
-    float bw = W * 0.55f, bh = 120.0f;
-    ImGui::SetCursorPos(ImVec2((W - bw) * 0.5f, H * 0.55f));
-    if (ImGui::Button("启  动", ImVec2(bw, bh))) {
-        _started = YES;
-        extern int gHUDHostMode;
-        if (gHUDHostMode) { _overlayMode = YES; _menuVisible = NO; [self applyGeometry]; }
-        else              { _overlayMode = NO;  _menuVisible = YES; [self applyGeometry]; }
+    const char *t1 = "WZ HUD";
+    ImGui::SetWindowFontScale(2.4f);
+    ImVec2 s1 = ImGui::CalcTextSize(t1);
+    ImGui::SetCursorPos(ImVec2((W - s1.x)*0.5f, H*0.235f));
+    ImGui::TextColored(ImVec4(0.86f, 0.93f, 1.0f, 1.0f), "%s", t1);
+    ImGui::SetWindowFontScale(1.0f);
+
+    const char *t2 = "跨进程读取 · 绘制";
+    ImVec2 s2 = ImGui::CalcTextSize(t2);
+    ImGui::SetCursorPos(ImVec2((W - s2.x)*0.5f, H*0.235f + 92*sc));
+    ImGui::TextColored(ImVec4(0.45f, 0.55f, 0.70f, 1.0f), "%s", t2);
+
+    // 主按钮
+    float bw = W * 0.62f, bh = 118.0f;
+    float bx = (W - bw) * 0.5f, by = H * 0.45f;
+    ImGui::SetCursorPos(ImVec2(bx, by));
+    ImVec2 mp = ImGui::GetCursorScreenPos();
+
+    bool running = _hudRunning;
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 60.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+    if (running) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f,0.16f,0.20f,1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.68f,0.22f,0.26f,1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.45f,0.12f,0.16f,1.0f));
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.13f,0.42f,0.85f,1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f,0.52f,0.98f,1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f,0.34f,0.72f,1.0f));
     }
+    if (ImGui::Button(running ? "  关闭 HUD  " : "  启动 HUD  ", ImVec2(bw, bh))) {
+        if (running) [self stopHudFromMain];
+        else         [self startHudFromMain];
+    }
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar(2);
+
+    // 按钮文字（大号）
+    const char *bt = running ? "关闭 HUD" : "启动 HUD";
+    ImGui::SetWindowFontScale(1.7f);
+    ImVec2 bs = ImGui::CalcTextSize(bt);
+    dl->AddText(ImVec2(mp.x + (bw - bs.x)*0.5f, mp.y + (bh - bs.y)*0.5f),
+                IM_COL32(255,255,255,255), bt);
+    ImGui::SetWindowFontScale(1.0f);
+
+    // 状态行
+    char st[160];
+    snprintf(st, sizeof(st), "状态：%s", running ? "运行中" : "未运行");
+    ImVec2 ss = ImGui::CalcTextSize(st);
+    ImGui::SetCursorPos(ImVec2((W - ss.x)*0.5f, by + bh + 46*sc));
+    ImGui::TextColored(running ? ImVec4(0.4f,1.0f,0.5f,1.0f) : ImVec4(0.5f,0.55f,0.62f,1.0f),
+                       "%s", st);
+
+    // 底部提示卡
+    float cw = W * 0.80f, ch = 130.0f;
+    float cx = (W - cw)*0.5f, cy = H - ch - 120*sc;
+    dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx+cw, cy+ch),
+                      IM_COL32(255,255,255,14), 20.0f);
+    const char *h1 = "启动后悬浮球会出现在屏幕上";
+    const char *h2 = "点悬浮球可展开菜单（读取 / 绘制）";
+    ImVec2 h1s = ImGui::CalcTextSize(h1), h2s = ImGui::CalcTextSize(h2);
+    dl->AddText(ImVec2(cx + (cw-h1s.x)*0.5f, cy + 26*sc),
+                IM_COL32(150,175,210,255), h1);
+    dl->AddText(ImVec2(cx + (cw-h2s.x)*0.5f, cy + 70*sc),
+                IM_COL32(120,140,175,255), h2);
+
     ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+}
+
+// 主 App：启动 HUD（拉起 root 宿主）
+- (void)startHudFromMain {
+    [self startHUDHost];
+    _hudRunning = YES;
+    _started = YES;
+}
+- (void)stopHudFromMain {
+    [self stopHUDHost];
+    _hudRunning = NO;
 }
 
 - (void)drawUI {
-    if (!_started) { [self drawStartPage]; return; }
+    extern int gHUDHostMode;
+
+    // 主 App：只有开关页
+    if (!gHUDHostMode) { [self drawStartPage]; return; }
+
+    // HUD 宿主：悬浮球 / 菜单
+    if (!_started) { _started = YES; }
+
     ImGuiIO &io = ImGui::GetIO();
     const float W = io.DisplaySize.x, H = io.DisplaySize.y;
 
-    // ── 悬浮 + 收起：圆形悬浮球 ──
-    if (_overlayMode && !_menuVisible) {
+    // ── 悬浮球 ──
+    if (!_menuVisible) {
         ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(W, H), ImGuiCond_Always);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -482,27 +567,32 @@ static const float kBtnW = 250.0f;
         }
         ImDrawList *dl = ImGui::GetWindowDrawList();
         ImVec2 c(W * 0.5f, H * 0.5f);
-        float r = MIN(W, H) * 0.46f;
-        ImU32 fill = hovered ? IM_COL32(52, 122, 205, 245) : IM_COL32(32, 88, 158, 230);
-        dl->AddCircleFilled(c, r, fill, 48);
-        dl->AddCircle(c, r, IM_COL32(140, 205, 255, 255), 48, 3.0f);
+        float r = MIN(W, H) * 0.44f;
+        if (hovered)
+            dl->AddCircleFilled(ImVec2(c.x, c.y + 4), r, IM_COL32(30,90,180,90), 48);
+        dl->AddCircleFilled(c, r, hovered ? IM_COL32(40,110,200,250) : IM_COL32(26,72,140,235), 48);
+        dl->AddCircle(c, r, IM_COL32(120,190,255,255), 48, 3.0f);
         const char *txt = "菜单";
         ImVec2 ts = ImGui::CalcTextSize(txt);
-        dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32_WHITE, txt);
-        if (clicked) { _menuVisible = YES; HUDSetPassthrough(NO); [self applyGeometry]; }
+        dl->AddText(ImVec2(c.x - ts.x*0.5f, c.y - ts.y*0.5f), IM_COL32_WHITE, txt);
+        if (clicked) { _menuVisible = YES; HUDSetPassthrough(NO); }
         ImGui::End();
         ImGui::PopStyleVar();
         return;
     }
 
-    // ── 主面板 ──
-    const float pad   = 16.0f;
-    const float topIn = _overlayMode ? 12.0f : (_safeTop + 8.0f);
-    const float botIn = _overlayMode ? 12.0f : (_safeBottom + 8.0f);
-    const float pw = W - pad * 2.0f;
-    const float ph = H - topIn - botIn;
+    [self drawMenuPanel];
+}
 
-    ImGui::SetNextWindowPos(ImVec2(pad, topIn), ImGuiCond_Always);
+// HUD 宿主：菜单面板
+- (void)drawMenuPanel {
+    ImGuiIO &io = ImGui::GetIO();
+    const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+    const float pad = 16.0f;
+    const float pw = W - pad*2.0f;
+    const float ph = H - pad*2.0f;
+
+    ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 14));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10, 10));
@@ -511,7 +601,7 @@ static const float kBtnW = 250.0f;
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoSavedSettings);
 
-    // ① 顶栏：拖动 + 模式
+    // 顶栏
     {
         ImVec2 ws = ImGui::GetWindowSize();
         ImGui::SetCursorPos(ImVec2(0, 0));
@@ -522,43 +612,26 @@ static const float kBtnW = 250.0f;
         }
         ImDrawList *dl = ImGui::GetWindowDrawList();
         ImVec2 wp = ImGui::GetWindowPos();
-        dl->AddText(ImVec2(wp.x + 16, wp.y + 8), IM_COL32(150, 155, 170, 255), "≡  按住拖动");
+        dl->AddText(ImVec2(wp.x + 16, wp.y + 8), IM_COL32(150,155,170,255), "≡  按住拖动");
     }
 
-    // ② 状态 + 模式按钮
-    ImGui::TextColored(ImVec4(0.35f, 1.0f, 0.45f, 1.0f), "● 就绪");
+    ImGui::TextColored(ImVec4(0.35f,1.0f,0.45f,1.0f), "● 运行中");
     ImGui::SameLine();
-    ImGui::TextDisabled("· %d 进程 · %s", _procCount, _overlayMode ? "悬浮" : "普通");
+    ImGui::TextDisabled("· %d 进程", _procCount);
     {
-        float bw = 280.0f;
+        float bw = 200.0f;
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - bw);
-        if (_overlayMode) {
-            if (ImGui::Button("收起", ImVec2(110, kBtnH))) {
-                _menuVisible = NO; HUDSetPassthrough(YES); [self applyGeometry];
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("退出悬浮", ImVec2(160, kBtnH))) [self setOverlay:NO];
-        } else {
-            if (ImGui::Button("开启悬浮 HUD", ImVec2(bw, kBtnH))) [self setOverlay:YES];
+        if (ImGui::Button("收起菜单", ImVec2(bw, kBtnH))) {
+            _menuVisible = NO; HUDSetPassthrough(YES);
         }
     }
     ImGui::Separator();
 
-    // ③ 菜单大小
-    ImGui::TextDisabled("菜单大小");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(260.0f);
-    ImGui::SliderFloat("##scale", &_menuScale, 0.70f, 1.60f, "%.2fx");
-    if (ImGui::IsItemDeactivatedAfterEdit()) { [self saveScale]; [self applyGeometry]; }
-    ImGui::Separator();
-
-    // ④ 目标进程
+    // 目标进程
     ImGui::TextDisabled("目标进程");
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 110.0f);
     if (ImGui::Button("刷新", ImVec2(100, kBtnH - 16))) [self refreshProcs];
-
-    float listH = ph * 0.28f;
-    ImGui::BeginChild("##proc", ImVec2(0, listH), true);
+    ImGui::BeginChild("##proc", ImVec2(0, ph * 0.26f), true);
     for (int i = 0; i < _procCount; i++) {
         char label[160];
         snprintf(label, sizeof(label), "%5d   %s", _procs[i].pid, _procs[i].name);
@@ -581,31 +654,11 @@ static const float kBtnW = 250.0f;
         if (ImGui::Button("libjailbreak 自检", ImVec2(half, kBtnH)))
             [self runJob:@[ @"--probe" ]];
     }
-    if (self.busy) ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "  执行中…");
+    if (self.busy) ImGui::TextColored(ImVec4(1.0f,0.8f,0.3f,1.0f), "  执行中…");
     ImGui::Separator();
 
-    // ⑤ 跨进程绘制（DS RemoteCall → SpringBoard）
-    ImGui::TextColored(ImVec4(0.55f, 0.8f, 1.0f, 1.0f), "跨进程绘制 · DS RemoteCall → SpringBoard");
-    {
-        float third = (pw - 40.0f) / 3.0f - 6.0f;
-        if (ImGui::Button(_drawing ? "■ 停止绘制" : "▶ 开始绘制", ImVec2(third, kBtnH))) {
-            if (_drawing) { [self runJob:@[ @"--exit" ]]; _drawing = NO; }
-            else          { [self runJobAsync:@[ @"--draw" ]]; _drawing = YES; }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("RemoteCall 自检", ImVec2(third, kBtnH)))
-            [self runJob:@[ @"--sbtest" ]];
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!_drawing);
-        if (ImGui::Button("停止(强制)", ImVec2(third, kBtnH))) {
-            [self runJob:@[ @"--exit" ]]; _drawing = NO;
-        }
-        ImGui::EndDisabled();
-    }
-    ImGui::Separator();
-
-    // ⑤.5 王牌战争读取
-    ImGui::TextColored(ImVec4(0.6f, 1.0f, 0.6f, 1.0f), "王牌战争 · 读取");
+    // 王牌战争
+    ImGui::TextColored(ImVec4(0.6f,1.0f,0.6f,1.0f), "王牌战争 · 读取绘制");
     {
         float half = (pw - 40.0f) * 0.5f - 4.0f;
         ImGui::BeginDisabled(_selRow < 0 || self.busy);
@@ -613,14 +666,13 @@ static const float kBtnW = 250.0f;
             [self runJob:@[ @"--wz", [NSString stringWithFormat:@"%d", _procs[_selRow].pid] ]];
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("读玩家并绘制", ImVec2(half, kBtnH)) && _selRow >= 0) {
-            _wzDrawPid = _procs[_selRow].pid;
+        ImGui::BeginDisabled(_selRow < 0 || self.busy);
+        if (ImGui::Button("读玩家并绘制", ImVec2(half, kBtnH)) && _selRow >= 0)
             [self runJob:@[ @"--wz", [NSString stringWithFormat:@"%d", _procs[_selRow].pid] ]];
-        }
+        ImGui::EndDisabled();
     }
     ImGui::Separator();
 
-    // ⑥ 输出
     ImGui::TextDisabled("输出");
     ImGui::BeginChild("##out", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(self.outputText.UTF8String);
@@ -628,36 +680,6 @@ static const float kBtnW = 250.0f;
 
     ImGui::End();
     ImGui::PopStyleVar(2);
-
-    // ── 绘制叠加层（读取模块塞进来的方框/文字/血条）──
-    if (_showDraw && WZDrawCount() > 0) {
-        ImDrawList *dl = ImGui::GetForegroundDrawList();
-        int n = WZDrawCount();
-        for (int i = 0; i < n; i++) {
-            const WZDrawItem *it = WZDrawGet(i);
-            if (!it) continue;
-            ImU32 col = IM_COL32((int)(it->r * 255), (int)(it->g * 255),
-                                 (int)(it->b * 255), (int)(it->a * 255));
-            switch (it->kind) {
-            case WZ_ITEM_BOX:
-                dl->AddRect(ImVec2(it->x, it->y),
-                            ImVec2(it->x + it->w, it->y + it->h),
-                            col, 0.0f, 0, it->thickness);
-                break;
-            case WZ_ITEM_LINE:
-                dl->AddLine(ImVec2(it->x, it->y), ImVec2(it->x2, it->y2),
-                            col, it->thickness);
-                break;
-            case WZ_ITEM_CIRCLE:
-                dl->AddCircle(ImVec2(it->x + it->w * 0.5f, it->y + it->h * 0.5f),
-                              it->w * 0.5f, col, 0, it->thickness);
-                break;
-            case WZ_ITEM_TEXT:
-                dl->AddText(ImVec2(it->x, it->y), col, it->text);
-                break;
-            }
-        }
-    }
 }
 
 #pragma mark - 触摸 → ImGui
