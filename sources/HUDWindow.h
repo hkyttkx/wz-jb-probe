@@ -17,8 +17,13 @@
 @end
 
 // 触摸穿透控制（YES = 点到下层游戏）
+// 注意：这些是 C 函数，.mm(C++) 里需要 extern "C" 才不会被 C++ 修饰
+#ifdef __cplusplus
+extern "C" {
+#endif
 void HUDSetPassthrough(BOOL v);
 BOOL HUDGetPassthrough(void);
-
-// 把窗口注册到 SpringBoard 的窗口托管服务
 BOOL HUDRegisterWindow(HUDWindow *win);
+#ifdef __cplusplus
+}
+#endif

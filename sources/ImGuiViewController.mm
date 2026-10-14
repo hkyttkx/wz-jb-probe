@@ -21,6 +21,7 @@ int proc_name(int pid, void *buffer, unsigned int buffersize);
 
 #import "imgui.h"
 #import "imgui_impl_metal.h"
+#import "HUDWindow.h"
 
 extern char **environ;
 extern "C" {
