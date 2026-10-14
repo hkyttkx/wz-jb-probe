@@ -26,6 +26,8 @@ void ds_sync_kernel_info(void);                 // ds_compat.mm
 uint64_t proc_find_by_name(const char *name);   // taskrop/utils.m
 void     ds_diag(char *out, size_t n, const char *tag);
 uint64_t ds_kread64(uint64_t a);
+void     offsets_init(void);
+void     init_offsets(void);
 }
 #ifndef PROC_PIDPATHINFO_MAXSIZE
 #define PROC_PIDPATHINFO_MAXSIZE 4096
