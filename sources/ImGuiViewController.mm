@@ -64,6 +64,7 @@ static const float kBtnW = 250.0f;
     BOOL _started;   // 是否已进入主菜单
     BOOL _showDraw;  // 是否显示绘制叠加
     int  _wzDrawPid; // 要读的游戏 pid
+    BOOL _hudRunning;// 主 App：HUD 是否在运行
 }
 
 - (void)viewDidLoad {
