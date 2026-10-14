@@ -54,6 +54,11 @@ static const float kBtnW = 250.0f;
     BOOL _isLandscape;      // 当前是否横屏
     float _safeTop;         // 安全区（像素）
     float _safeBottom;
+    float _menuScale;       // 菜单缩放 0.7 ~ 1.6
+    CGPoint _ballPos;       // 悬浮球左上角（屏幕 point）
+    CGPoint _panelPos;      // 菜单左上角（屏幕 point）
+    BOOL _hasBallPos;
+    BOOL _hasPanelPos;
 }
 
 - (void)viewDidLoad {
@@ -75,6 +80,22 @@ static const float kBtnW = 250.0f;
     self.outputText = @"选一行进程 → 点「读取目标进程」。";
     _selRow = -1;
     _procCount = 0;
+    _dragging = NO;
+    _hasBallPos = NO;
+    _hasPanelPos = NO;
+    {
+        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+        float sc = [ud floatForKey:@"WZMenuScale"];
+        _menuScale = (sc >= 0.5f && sc <= 2.0f) ? sc : 1.0f;
+        if ([ud objectForKey:@"WZBallX"]) {
+            _ballPos = CGPointMake([ud floatForKey:@"WZBallX"], [ud floatForKey:@"WZBallY"]);
+            _hasBallPos = YES;
+        }
+        if ([ud objectForKey:@"WZPanelX"]) {
+            _panelPos = CGPointMake([ud floatForKey:@"WZPanelX"], [ud floatForKey:@"WZPanelY"]);
+            _hasPanelPos = YES;
+        }
+    }
     // HUD 宿主进程：默认悬浮 + 收起（只显示悬浮球）
     extern int gHUDHostMode;
     if (gHUDHostMode) { _overlayMode = YES; _menuVisible = NO; }
@@ -275,20 +296,42 @@ static const float kBtnW = 250.0f;
 }
 
 - (void)stopHUDHost {
-    if (_hudHostPid > 0) {
-        kill(_hudHostPid, SIGKILL);
-        os_log(OS_LOG_DEFAULT, "[WZ] HUD宿主停止 pid=%d", _hudHostPid);
-        _hudHostPid = 0;
+    // 主 App 是普通用户，杀不动 root 宿主；
+    // 用一个 uid=0 的 --exit 子进程去 kill（TrollSpeed 同款做法）
+    char exe[PATH_MAX];
+    uint32_t sz = sizeof(exe);
+    if (_NSGetExecutablePath(exe, &sz) != 0) return;
+
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_set_persona_np(&attr, 99, 1);
+    posix_spawnattr_set_persona_uid_np(&attr, 0);
+    posix_spawnattr_set_persona_gid_np(&attr, 0);
+
+    const char *argv[] = { exe, "--exit", NULL };
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, exe, NULL, &attr, (char *const *)argv, environ);
+    posix_spawnattr_destroy(&attr);
+    if (rc == 0) {
+        int st = 0; waitpid(pid, &st, 0);
+        os_log(OS_LOG_DEFAULT, "[WZ] 已请求关闭 HUD");
+    } else {
+        os_log(OS_LOG_DEFAULT, "[WZ] 关闭 HUD 失败 rc=%d", rc);
     }
+    _hudHostPid = 0;
+}
+
+- (void)saveScale {
+    [[NSUserDefaults standardUserDefaults] setFloat:_menuScale forKey:@"WZMenuScale"];
 }
 
 - (void)applyGeometry {
     UIWindow *win = [self hudWin];
     if (!win) return;
-
+    CGRect scr = UIScreen.mainScreen.bounds;
     [UIView setAnimationsEnabled:NO];
     if (!_overlayMode) {
-        win.frame = UIScreen.mainScreen.bounds;
+        win.frame = scr;
         win.backgroundColor = [UIColor blackColor];
         win.opaque = YES;
         self.mtkView.clearColor = MTLClearColorMake(0.04f, 0.04f, 0.055f, 1.0f);
@@ -296,17 +339,63 @@ static const float kBtnW = 250.0f;
         win.backgroundColor = [UIColor clearColor];
         win.opaque = NO;
         self.mtkView.clearColor = MTLClearColorMake(0.0f, 0.0f, 0.0f, 0.0f);  // 完全透明
-        win.frame = _menuVisible ? [self panelFrame] : [self circleFrame];
+
+        CGFloat shortSide = MIN(scr.size.width, scr.size.height);
+        if (_menuVisible) {
+            CGFloat w = MIN(scr.size.width  - 24.0, 470.0 * _menuScale);
+            CGFloat h = MIN(scr.size.height - 24.0, 760.0 * _menuScale);
+            CGFloat x, y;
+            if (_hasPanelPos) { x = _panelPos.x; y = _panelPos.y; }
+            else { x = (scr.size.width - w) * 0.5; y = (scr.size.height - h) * 0.5; }
+            x = MAX(0, MIN(x, scr.size.width  - w));
+            y = MAX(0, MIN(y, scr.size.height - h));
+            _panelPos = CGPointMake(x, y); _hasPanelPos = YES;
+            win.frame = CGRectMake(x, y, w, h);
+        } else {
+            CGFloat d = MAX(shortSide * 0.17 * _menuScale, 44.0);
+            CGFloat x, y;
+            if (_hasBallPos) { x = _ballPos.x; y = _ballPos.y; }
+            else { x = scr.size.width - d - 14.0; y = 60.0; }
+            x = MAX(0, MIN(x, scr.size.width  - d));
+            y = MAX(0, MIN(y, scr.size.height - d));
+            _ballPos = CGPointMake(x, y); _hasBallPos = YES;
+            win.frame = CGRectMake(x, y, d, d);
+        }
     }
     [UIView setAnimationsEnabled:YES];
 
-    // 尺寸突变后清输入状态，防止按钮"卡住"
+    // 尺寸/位置突变后清输入状态，防止按钮"卡住"
     ImGuiIO &io = ImGui::GetIO();
     io.AddMouseButtonEvent(0, false);
     io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 
-    os_log(OS_LOG_DEFAULT, "[WZ] geom ov=%d menu=%d land=%d %.0fx%.0f",
-           _overlayMode, _menuVisible, _isLandscape, win.frame.size.width, win.frame.size.height);
+    os_log(OS_LOG_DEFAULT, "[WZ] geom ov=%d menu=%d scale=%.2f %.0fx%.0f",
+           _overlayMode, _menuVisible, _menuScale, win.frame.size.width, win.frame.size.height);
+}
+
+// 拖动（delta 单位 = ImGui 像素）
+- (void)moveWindowBy:(CGPoint)deltaPx {
+    UIWindow *win = [self hudWin];
+    if (!win) return;
+    CGFloat sc = UIScreen.mainScreen.scale;
+    CGRect scr = UIScreen.mainScreen.bounds;
+    CGRect f = win.frame;
+    f.origin.x += deltaPx.x / sc;
+    f.origin.y += deltaPx.y / sc;
+    f.origin.x = MAX(0, MIN(f.origin.x, scr.size.width  - f.size.width));
+    f.origin.y = MAX(0, MIN(f.origin.y, scr.size.height - f.size.height));
+    win.frame = f;
+
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if (_menuVisible) {
+        _panelPos = f.origin; _hasPanelPos = YES;
+        [ud setFloat:f.origin.x forKey:@"WZPanelX"];
+        [ud setFloat:f.origin.y forKey:@"WZPanelY"];
+    } else {
+        _ballPos = f.origin; _hasBallPos = YES;
+        [ud setFloat:f.origin.x forKey:@"WZBallX"];
+        [ud setFloat:f.origin.y forKey:@"WZBallY"];
+    }
 }
 
 #pragma mark - 界面
@@ -327,8 +416,15 @@ static const float kBtnW = 250.0f;
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground);
 
         ImGui::InvisibleButton("##hit", ImVec2(W, H));
-        bool hovered = ImGui::IsItemHovered();
+        bool hovered = ImGui::IsItemActive() || ImGui::IsItemHovered();
         bool clicked = ImGui::IsItemClicked();
+
+        // 拖动悬浮球
+        if (ImGui::IsItemActive()) {
+            ImVec2 d = ImGui::GetIO().MouseDelta;
+            if (d.x != 0.0f || d.y != 0.0f)
+                [self moveWindowBy:CGPointMake(d.x, d.y)];
+        }
 
         ImDrawList *dl = ImGui::GetWindowDrawList();
         ImVec2 c(W * 0.5f, H * 0.5f);
@@ -365,6 +461,21 @@ static const float kBtnW = 250.0f;
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoSavedSettings);
 
+    // ── 顶部拖动条：按住可整体移动 HUD ──
+    {
+        ImVec2 ws = ImGui::GetWindowSize();
+        ImGui::SetCursorPos(ImVec2(0, 0));
+        ImGui::InvisibleButton("##dragbar", ImVec2(ws.x - 8.0f, 44.0f));
+        if (ImGui::IsItemActive()) {
+            ImVec2 d = ImGui::GetIO().MouseDelta;
+            if (d.x != 0.0f || d.y != 0.0f)
+                [self moveWindowBy:CGPointMake(d.x, d.y)];
+        }
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImVec2 wp = ImGui::GetWindowPos();
+        dl->AddText(ImVec2(wp.x + 14, wp.y + 10), IM_COL32(150, 155, 170, 255), "≡  按住拖动");
+    }
+
     const float inner = ImGui::GetContentRegionAvail().y;
 
     // ① 状态 + 模式按钮
@@ -385,6 +496,19 @@ static const float kBtnW = 250.0f;
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 300.0f);
         if (ImGui::Button("开启悬浮", ImVec2(290, kBtnH))) [self setOverlay:YES];
     }
+    ImGui::Separator();
+
+    // ── 菜单大小 ──
+    ImGui::TextDisabled("菜单大小");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(320.0f);
+    ImGui::SliderFloat("##scale", &_menuScale, 0.70f, 1.60f, "%.2fx");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        [self saveScale];
+        [self applyGeometry];
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("（拖完松手生效）");
     ImGui::Separator();
 
     // ② 进程列表

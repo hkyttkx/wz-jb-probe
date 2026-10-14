@@ -90,6 +90,13 @@ extern "C" int gHUDHostMode = 0;
 extern "C" int HUDHostRun(void) {
     @autoreleasepool {
         gHUDHostMode = 1;
+
+        // 写 pid 文件，供 App 后续 --exit 使用
+        {
+            NSString *pidStr = [NSString stringWithFormat:@"%d", getpid()];
+            [pidStr writeToFile:@"/var/mobile/Library/Caches/com.wz.jbprobe.hud.pid"
+                     atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
         os_log(OS_LOG_DEFAULT, "[HUDHost] 启动");
 
         [UIScreen initialize];

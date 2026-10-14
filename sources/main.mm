@@ -26,6 +26,29 @@ int HUDHostRun(void);      // root HUD 宿主（HUDHost.mm）
 #define PROC_PIDPATHINFO_MAXSIZE 4096
 #endif
 
+// HUD 进程 pid 文件
+#define WZ_PID_PATH "/var/mobile/Library/Caches/com.wz.jbprobe.hud.pid"
+
+// --exit：杀掉 HUD 宿主（由 App 以 uid=0 拉起才有权限）
+static int do_exit_hud(void) {
+    NSString *s = [NSString stringWithContentsOfFile:@WZ_PID_PATH
+                                            encoding:NSUTF8StringEncoding error:nil];
+    if (s.length == 0) return 0;
+    pid_t pid = (pid_t)[s intValue];
+    if (pid > 1) { kill(pid, SIGKILL); unlink(WZ_PID_PATH); }
+    return 0;
+}
+
+// --check：HUD 是否在跑（0=在跑）
+static int do_check_hud(void) {
+    NSString *s = [NSString stringWithContentsOfFile:@WZ_PID_PATH
+                                            encoding:NSUTF8StringEncoding error:nil];
+    if (s.length == 0) return 1;
+    pid_t pid = (pid_t)[s intValue];
+    if (pid <= 1) return 1;
+    return (kill(pid, 0) == 0) ? 0 : 1;
+}
+
 // ─────────────────────────────────────────────────────────────
 //  --read <pid> <out>：读取任意目标进程
 // ─────────────────────────────────────────────────────────────
@@ -170,6 +193,12 @@ int main(int argc, char *argv[]) {
     @autoreleasepool {
         if (argc > 1 && strcmp(argv[1], "--hud") == 0) {
             return HUDHostRun();          // root 宿主：自建 UIApplication + 全局触摸
+        }
+        if (argc > 1 && strcmp(argv[1], "--exit") == 0) {
+            return do_exit_hud();         // root 子进程：杀掉 HUD
+        }
+        if (argc > 1 && strcmp(argv[1], "--check") == 0) {
+            return do_check_hud();        // 查询 HUD 是否在跑
         }
         if (argc > 2 && strcmp(argv[1], "--probe") == 0) {
             return do_probe_and_write(argv[2]);
