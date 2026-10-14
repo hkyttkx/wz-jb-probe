@@ -14,6 +14,7 @@
 #import <unistd.h>
 #import <mach/mach.h>
 #import <mach-o/dyld_images.h>
+#import "RemoteCall.h"
 
 // libproc：iOS SDK 不提供 libproc.h，自行声明
 extern "C" {
@@ -28,6 +29,93 @@ int HUDHostRun(void);      // root HUD 宿主（HUDHost.mm）
 
 // HUD 进程 pid 文件
 #define WZ_PID_PATH "/var/mobile/Library/Caches/com.wz.jbprobe.hud.pid"
+
+// ─────────────────────────────────────────────────────────────
+//  --sbtest <out>：验证 DS 的 RemoteCall 能否操作 SpringBoard
+// ─────────────────────────────────────────────────────────────
+static int do_springboard_test(const char *outpath) {
+    char buf[12288];
+    int off = 0;
+
+    off += snprintf(buf + off, sizeof(buf) - off,
+                    "uid = %d (root=%s)\n", (int)getuid(), getuid() == 0 ? "是" : "否");
+
+    // ① 越狱拿 kernel r/w（DS 的"根"）
+    if (jb_load() != 0) {
+        off += snprintf(buf + off, sizeof(buf) - off, "jb_load 失败: %s\n", jb_status());
+        goto writeout;
+    }
+    {
+        extern "C" void ds_sync_kernel_info(void);
+        ds_sync_kernel_info();
+    }
+    int r = jb_init_primitives();
+    off += snprintf(buf + off, sizeof(buf) - off,
+                    "init_primitives = %d  %s\n", r, r == 0 ? "OK" : "FAIL");
+    if (r != 0) goto writeout;
+
+    // ② 定位 SpringBoard
+    {
+        extern "C" uint64_t proc_find_by_name(const char *);
+        uint64_t sbProc = proc_find_by_name("SpringBoard");
+        off += snprintf(buf + off, sizeof(buf) - off, "SpringBoard proc = 0x%llx\n", sbProc);
+    }
+
+    // ③ DS 的 RemoteCall attach
+    {
+        Class rcCls = NSClassFromString(@"RemoteCall");
+        if (!rcCls) {
+            off += snprintf(buf + off, sizeof(buf) - off, "RemoteCall 类不存在\n");
+            goto writeout;
+        }
+        RemoteCall *sb = [[rcCls alloc] initWithProcess:@"SpringBoard" useMigFilterBypass:NO];
+        if (!sb || sb.trojanMem == 0 || sb.pid <= 1) {
+            off += snprintf(buf + off, sizeof(buf) - off,
+                            "attach 失败 (pid=%d trojanMem=0x%llx)\n", sb ? sb.pid : -1,
+                            sb ? sb.trojanMem : 0);
+            goto writeout;
+        }
+        off += snprintf(buf + off, sizeof(buf) - off,
+                        "★ attach OK  pid=%d trojanMem=0x%llx\n", sb.pid, sb.trojanMem);
+
+        // ④ 拿类（证明能远程执行）
+        uint64_t selAlloc   = remote_sel(sb, "alloc");
+        uint64_t selInit    = remote_sel(sb, "init");
+        uint64_t clsWindow  = remote_getClass(sb, "UIWindow");
+        uint64_t clsUIView  = remote_getClass(sb, "UIView");
+        uint64_t clsUIColor = remote_getClass(sb, "UIColor");
+        off += snprintf(buf + off, sizeof(buf) - off,
+                        "UIWindow=0x%llx UIView=0x%llx UIColor=0x%llx\n",
+                        clsWindow, clsUIView, clsUIColor);
+
+        // ⑤ 远程创建对象（证明能改别人进程的状态）
+        if (clsWindow && selAlloc && selInit) {
+            uint64_t win = remote_msg(sb, clsWindow, selAlloc, 0, 0, 0, 0);
+            win = remote_msg(sb, win, selInit, 0, 0, 0, 0);
+            off += snprintf(buf + off, sizeof(buf) - off,
+                            "★ 在 SpringBoard 里创建 UIWindow = 0x%llx %s\n",
+                            win, win ? "OK" : "FAIL");
+            if (win) {
+                // 读回它的 retainCount，证明对象真实存在
+                uint64_t rcSel = remote_sel(sb, "retainCount");
+                uint64_t rc = remote_msg(sb, win, rcSel, 0, 0, 0, 0);
+                off += snprintf(buf + off, sizeof(buf) - off,
+                                "  retainCount = %llu\n", rc);
+            }
+        }
+        off += snprintf(buf + off, sizeof(buf) - off,
+                        "\n=== DS RemoteCall 在越狱环境下可用 ===\n");
+    }
+
+writeout:
+    {
+        FILE *f = fopen(outpath, "w");
+        if (!f) return 3;
+        fwrite(buf, 1, off, f);
+        fclose(f);
+    }
+    return 0;
+}
 
 // --exit：杀掉 HUD 宿主（由 App 以 uid=0 拉起才有权限）
 static int do_exit_hud(void) {
@@ -193,6 +281,9 @@ int main(int argc, char *argv[]) {
     @autoreleasepool {
         if (argc > 1 && strcmp(argv[1], "--hud") == 0) {
             return HUDHostRun();          // root 宿主：自建 UIApplication + 全局触摸
+        }
+        if (argc > 2 && strcmp(argv[1], "--sbtest") == 0) {
+            return do_springboard_test(argv[2]);
         }
         if (argc > 1 && strcmp(argv[1], "--exit") == 0) {
             return do_exit_hud();         // root 子进程：杀掉 HUD
