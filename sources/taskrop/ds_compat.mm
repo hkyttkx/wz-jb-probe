@@ -171,6 +171,9 @@ extern "C" void ds_diag(char *out, size_t n, const char *tag) {
 }
 
 // ★ 基础能力对照：把 libjailbreak 的原始能力和 DS 的能力分别测一遍
+extern "C" uint64_t proc_find_by_name(const char *name);
+extern "C" uint64_t ds_get_our_proc(void);
+
 extern "C" void ds_probe_basics(char *out, size_t n) {
     int o = 0;
     // A. libjailbreak 的原始能力（这些前面已证明可用）
