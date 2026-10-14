@@ -24,6 +24,8 @@ int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
 int HUDHostRun(void);      // root HUD 宿主（HUDHost.mm）
 void ds_sync_kernel_info(void);                 // ds_compat.mm
 uint64_t proc_find_by_name(const char *name);   // taskrop/utils.m
+void     ds_diag(char *out, size_t n, const char *tag);
+uint64_t ds_kread64(uint64_t a);
 }
 #ifndef PROC_PIDPATHINFO_MAXSIZE
 #define PROC_PIDPATHINFO_MAXSIZE 4096
@@ -103,8 +105,6 @@ static int do_springboard_test(const char *outpath) {
 
     // ①.5 诊断
     {
-        extern "C" void ds_diag(char *out, size_t n, const char *tag);
-        extern "C" uint64_t ds_kread64(uint64_t a);
         char d[512]; ds_diag(d, sizeof(d), "after-init");
         off += snprintf(buf + off, sizeof(buf) - off, "%s\n", d);
         uint64_t t = ds_kread64(0xfffffff007004000ULL + 0x100);
