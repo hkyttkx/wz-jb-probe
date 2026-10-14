@@ -13,6 +13,7 @@
 #import <stdlib.h>
 #import <ctype.h>
 #import <os/log.h>
+#import <signal.h>
 
 #import "imgui.h"
 #import "imgui_impl_metal.h"
@@ -48,6 +49,7 @@ static const float kBtnW    = 250.0f;
     dispatch_source_t _timer;
     BOOL _menuVisible;
     BOOL _overlayMode;
+    pid_t _hudHostPid;
 }
 
 - (void)viewDidLoad {

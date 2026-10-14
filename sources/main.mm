@@ -167,6 +167,9 @@ static int do_probe_and_write(const char *outpath) {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        if (argc > 1 && strcmp(argv[1], "--hud") == 0) {
+            return HUDHostRun();          // root 宿主：自建 UIApplication + 全局触摸
+        }
         if (argc > 2 && strcmp(argv[1], "--probe") == 0) {
             return do_probe_and_write(argv[2]);
         }
