@@ -140,10 +140,16 @@ uint64_t ds_kallocarrdec(uint64_t ptr) { return ptr & ~0xFULL; }
 
 // 诊断：把内部关键值暴露出来
 extern "C" void ds_diag(char *out, size_t n, const char *tag) {
-    snprintf(out, n,
-             "[%s] h=0x%llx sysinfo=0x%llx kbase=0x%llx kslide=0x%llx kread64=%p",
-             tag, (uint64_t)g_jb_handle, (uint64_t)g_sysinfo,
-             kernel_base, kernel_slide, (void *)p_kread64);
+    int o = snprintf(out, n,
+             "[%s] sysinfo=0x%llx base=0x%llx slide=0x%llx\n",
+             tag, (uint64_t)g_sysinfo, kernel_base, kernel_slide);
+    if (g_sysinfo) {
+        uint64_t *w = (uint64_t *)g_sysinfo;
+        o += snprintf(out + o, n - o, "dump(0..0x60): ");
+        for (int i = 0; i < 12; i++)
+            o += snprintf(out + o, n - o, "%02x:%llx ", i * 8, w[i]);
+        o += snprintf(out + o, n - o, "\n");
+    }
 }
 
 uint64_t ds_get_kernel_base(void)  { return kernel_base; }

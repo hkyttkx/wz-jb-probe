@@ -105,7 +105,7 @@ static int do_springboard_test(const char *outpath) {
 
     // ①.5 诊断
     {
-        char d[512]; ds_diag(d, sizeof(d), "after-init");
+        char d[1024]; ds_diag(d, sizeof(d), "after-init");
         off += snprintf(buf + off, sizeof(buf) - off, "%s\n", d);
         uint64_t t = ds_kread64(0xfffffff007004000ULL + 0x100);
         off += snprintf(buf + off, sizeof(buf) - off, "试探读 kbase+0x100 = 0x%llx\n", t);
