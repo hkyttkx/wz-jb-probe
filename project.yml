@@ -9,6 +9,8 @@ options:
     iOS: "15.0"
   createIntermediateGroups: true
   groupSortPosition: top
+  # CI runner (macos-14 / Xcode 15) 不支持格式 77（Xcode 16 引入）
+  objectVersion: 56
 
 settings:
   base:
