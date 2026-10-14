@@ -30,6 +30,10 @@ int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t * __restrict, uid
 typedef struct { int pid; char name[128]; } ProcEntry;
 #define MAXPROC 512
 
+// 常用控件尺寸（像素 @3x）：62 ≈ 21pt 高，触摸友好
+static const float kBtnH    = 62.0f;
+static const float kBtnW    = 250.0f;
+
 @interface ImGuiViewController () <MTKViewDelegate>
 @property (nonatomic, strong) MTKView *mtkView;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
@@ -42,8 +46,8 @@ typedef struct { int pid; char name[128]; } ProcEntry;
     int  _procCount;
     int  _selRow;
     dispatch_source_t _timer;
-    BOOL _menuVisible;    // 悬浮模式下菜单是否展开
-    BOOL _overlayMode;    // 是否悬浮模式
+    BOOL _menuVisible;
+    BOOL _overlayMode;
 }
 
 - (void)viewDidLoad {
@@ -56,12 +60,12 @@ typedef struct { int pid; char name[128]; } ProcEntry;
     self.mtkView.preferredFramesPerSecond = 60;
     self.mtkView.opaque = NO;
     self.mtkView.backgroundColor = [UIColor clearColor];
-    self.mtkView.clearColor = MTLClearColorMake(0.04, 0.04, 0.055, 0.92);  // 半透明底
+    self.mtkView.clearColor = MTLClearColorMake(0.04f, 0.04f, 0.055f, 1.0f);
     self.mtkView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.mtkView];
 
     self.commandQueue = [device newCommandQueue];
-    self.outputText = @"选择目标进程 → 点「读取目标进程」。";
+    self.outputText = @"选一行进程 → 点「读取目标进程」。";
     _selRow = -1;
     _procCount = 0;
     _menuVisible = YES;
@@ -71,11 +75,14 @@ typedef struct { int pid; char name[128]; } ProcEntry;
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
     ImGuiStyle &st = ImGui::GetStyle();
-    st.WindowRounding = 8.0f;
-    st.FrameRounding  = 5.0f;
-    st.WindowBorderSize = 1.0f;
-    st.WindowPadding = ImVec2(14, 12);
-    st.ItemSpacing = ImVec2(10, 9);
+    st.WindowRounding   = 10.0f;
+    st.FrameRounding    = 6.0f;
+    st.GrabRounding     = 6.0f;
+    st.WindowBorderSize = 0.0f;
+    st.WindowPadding    = ImVec2(16, 14);
+    st.FramePadding     = ImVec2(12, 9);
+    st.ItemSpacing      = ImVec2(10, 10);
+    st.ScrollbarSize    = 22.0f;
     {
         ImGuiIO &io = ImGui::GetIO();
         io.Fonts->Clear();
@@ -87,7 +94,7 @@ typedef struct { int pid; char name[128]; } ProcEntry;
         b.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
         b.BuildRanges(&ranges);
         NSString *fp = [[NSBundle mainBundle] pathForResource:@"font" ofType:@"ttf"];
-        if (fp) io.Fonts->AddFontFromFileTTF(fp.UTF8String, 32.0f, &cfg, ranges.Data);
+        if (fp) io.Fonts->AddFontFromFileTTF(fp.UTF8String, 28.0f, &cfg, ranges.Data);
         else    io.Fonts->AddFontDefault();
         io.Fonts->Build();
     }
@@ -105,7 +112,7 @@ typedef struct { int pid; char name[128]; } ProcEntry;
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    [self applyGeometry];      // 此时窗口已就绪
+    [self applyGeometry];
 }
 
 - (HUDWindow *)hudWin {
@@ -171,103 +178,110 @@ typedef struct { int pid; char name[128]; } ProcEntry;
     });
 }
 
-#pragma mark - 界面
+#pragma mark - 几何 / 模式
 
 - (void)setOverlay:(BOOL)on {
     HUDWindow *win = [self hudWin];
     if (win) HUDSetOverlayMode(win, on);
     _overlayMode = on;
-    _menuVisible = !on;               // 进入悬浮先收起
+    _menuVisible = !on;
     [self applyGeometry];
 }
 
-// 关键：悬浮模式下窗口只占菜单那块，避免"糊一层黑纸"
 - (void)applyGeometry {
     HUDWindow *win = [self hudWin];
     if (!win) return;
     CGRect scr = UIScreen.mainScreen.bounds;
 
-    [UIView setAnimationsEnabled:NO];   // 免得动画期间 ImGui 尺寸抖动
+    [UIView setAnimationsEnabled:NO];
     if (!_overlayMode) {
-        win.frame = scr;                // 普通模式：全屏正常 App
+        win.frame = scr;
         win.backgroundColor = [UIColor blackColor];
         win.opaque = YES;
-        self.mtkView.clearColor = MTLClearColorMake(0.04, 0.04, 0.055, 1.0);
+        self.mtkView.clearColor = MTLClearColorMake(0.04f, 0.04f, 0.055f, 1.0f);
     } else {
         win.backgroundColor = [UIColor clearColor];
         win.opaque = NO;
-        self.mtkView.clearColor = MTLClearColorMake(0.04, 0.04, 0.055, 0.94);
+        self.mtkView.clearColor = MTLClearColorMake(0.04f, 0.04f, 0.055f, 0.96f);
         if (_menuVisible) {
-            CGFloat w = MIN(scr.size.width - 40.0, 520.0);
-            CGFloat h = MIN(scr.size.height * 0.66, 900.0);
+            CGFloat w = MIN(scr.size.width - 32.0, 470.0);
+            CGFloat h = MIN(scr.size.height * 0.60, 760.0);
             win.frame = CGRectMake((scr.size.width - w) * 0.5,
                                    (scr.size.height - h) * 0.5, w, h);
         } else {
-            CGFloat s = 104.0;          // 收起：右上角小方块
+            CGFloat s = 100.0;
             win.frame = CGRectMake(scr.size.width - s - 16.0, 92.0, s, s);
         }
     }
     [UIView setAnimationsEnabled:YES];
-    os_log(OS_LOG_DEFAULT, "[WZ] geometry overlay=%d menu=%d frame=%.0fx%.0f",
+    os_log(OS_LOG_DEFAULT, "[WZ] geom overlay=%d menu=%d %.0fx%.0f",
            _overlayMode, _menuVisible, win.frame.size.width, win.frame.size.height);
 }
+
+#pragma mark - 界面
 
 - (void)drawUI {
     ImGuiIO &io = ImGui::GetIO();
     const float W = io.DisplaySize.x, H = io.DisplaySize.y;
 
-    // ── 悬浮模式 + 收起：只留一个小唤醒按钮 ──
+    // 悬浮 + 收起：窗口本身就是那个小方块
     if (_overlayMode && !_menuVisible) {
-        const float bw = 130.0f, bh = 130.0f;
-        ImGui::SetNextWindowPos(ImVec2(W - bw - 40.0f, 260.0f), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(bw, bh), ImGuiCond_Always);
+        ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(W, H), ImGuiCond_Always);
         ImGui::Begin("##mini", NULL,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground);
-        if (ImGui::Button("菜单", ImVec2(bw - 16, bh - 16))) {
+                     ImGuiWindowFlags_NoSavedSettings);
+        if (ImGui::Button("菜单", ImVec2(W - 24.0f, H - 24.0f))) {
             _menuVisible = YES;
             HUDSetPassthrough(NO);
+            [self applyGeometry];
         }
         ImGui::End();
         return;
     }
 
-    // ── 主面板（填满当前窗口，窗口尺寸由 applyGeometry 控制）──
-    const float pw = W;
-    const float ph = H - 70.0f;      // 底部留状态条
-    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    // 安全区：普通模式全屏，需避开灵动岛/Home 条（按像素 @3x）
+    const float topSafe = _overlayMode ? 16.0f  : 210.0f;
+    const float botSafe = _overlayMode ? 16.0f  : 140.0f;
+    const float pad     = 24.0f;
+
+    const float pw = W - pad * 2.0f;
+    const float ph = H - topSafe - botSafe;
+
+    ImGui::SetNextWindowPos(ImVec2(pad, topSafe), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
-    ImGui::Begin("WZ 控制台", NULL, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
+    ImGui::Begin("##main", NULL,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoSavedSettings);
 
-    // 状态 + 模式切换
-    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "libjailbreak 可用");
+    const float inner  = ImGui::GetContentRegionAvail().y;
+
+    // ① 状态 + 模式按钮
+    ImGui::TextColored(ImVec4(0.35f, 1.0f, 0.45f, 1.0f), "● 已就绪");
     ImGui::SameLine();
-    ImGui::TextDisabled("· %d 个进程", _procCount);
+    ImGui::TextDisabled("| %d 进程 | %s", _procCount, _overlayMode ? "悬浮" : "普通");
 
-    ImGui::SameLine(ImGui::GetWindowWidth() - ( _overlayMode ? 420.0f : 260.0f));
+    float btnW = _overlayMode ? 280.0f : 300.0f;
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - btnW);
     if (_overlayMode) {
-        if (ImGui::Button("收起", ImVec2(120, 0))) {
-            _menuVisible = NO;
-            HUDSetPassthrough(YES);       // 收起后触摸穿透，游戏可玩
+        if (ImGui::Button("收起", ImVec2(110, kBtnH))) {
+            _menuVisible = NO; HUDSetPassthrough(YES); [self applyGeometry];
         }
         ImGui::SameLine();
-        if (ImGui::Button("退出悬浮", ImVec2(170, 0))) {
-            [self setOverlay:NO];
-        }
+        if (ImGui::Button("退出悬浮", ImVec2(160, kBtnH))) [self setOverlay:NO];
     } else {
-        if (ImGui::Button("开启悬浮 HUD", ImVec2(240, 0))) {
-            [self setOverlay:YES];
-        }
+        if (ImGui::Button("开启悬浮 HUD", ImVec2(300, kBtnH))) [self setOverlay:YES];
     }
     ImGui::Separator();
 
-    // 进程列表
-    if (ImGui::Button("刷新", ImVec2(110, 0))) [self refreshProcs];
-    ImGui::SameLine();
-    ImGui::TextDisabled("点一行选中目标");
+    // ② 进程列表（占内高 36%）
+    ImGui::TextDisabled("目标进程");
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 130.0f);
+    if (ImGui::Button("刷新", ImVec2(120, kBtnH - 14))) [self refreshProcs];
 
-    ImGui::BeginChild("##proc", ImVec2(0, ph * 0.42f), true);
+    ImGui::BeginChild("##proc", ImVec2(0, inner * 0.36f), true);
     for (int i = 0; i < _procCount; i++) {
         char label[160];
         snprintf(label, sizeof(label), "%5d   %s", _procs[i].pid, _procs[i].name);
@@ -275,42 +289,44 @@ typedef struct { int pid; char name[128]; } ProcEntry;
     }
     ImGui::EndChild();
 
-    // 目标 + 操作
+    // ③ 已选 + 操作
     if (_selRow >= 0 && _selRow < _procCount)
-        ImGui::Text("目标：%s  (pid=%d)", _procs[_selRow].name, _procs[_selRow].pid);
+        ImGui::Text("已选：%s (pid=%d)", _procs[_selRow].name, _procs[_selRow].pid);
     else
-        ImGui::TextDisabled("目标：（未选择）");
+        ImGui::TextDisabled("已选：（点列表选一行）");
 
     ImGui::BeginDisabled(_selRow < 0 || self.busy);
-    if (ImGui::Button("读取目标进程", ImVec2(230, 0)) && _selRow >= 0)
+    if (ImGui::Button("读取目标进程", ImVec2(kBtnW, kBtnH)) && _selRow >= 0)
         [self runJob:@[ @"--read", [NSString stringWithFormat:@"%d", _procs[_selRow].pid] ]];
     ImGui::SameLine();
-    if (ImGui::Button("自检", ImVec2(120, 0)))
-        [self runJob:@[ @"--probe" ]];
+    if (ImGui::Button("自检", ImVec2(130, kBtnH))) [self runJob:@[ @"--probe" ]];
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (self.busy) ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "执行中…");
+    if (self.busy) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1,0.8,0.3,1), "执行中…"); }
+    ImGui::Separator();
 
-    // 输出
+    // ④ 输出（剩余空间）
+    ImGui::TextDisabled("输出");
     ImGui::BeginChild("##out", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(self.outputText.UTF8String);
     ImGui::EndChild();
 
     ImGui::End();
 
-    // 底部状态
-    ImGui::SetNextWindowPos(ImVec2((W - pw) * 0.5f, (H + ph) * 0.5f - 96.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(pw, 60.0f), ImGuiCond_Always);
-    ImGui::Begin("##st", NULL,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
-                 ImGuiWindowFlags_NoBringToFrontOnFocus);
-    ImGui::Text("ImGui %s", IMGUI_VERSION);
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "  %.0f FPS", io.Framerate);
-    ImGui::SameLine();
-    ImGui::TextDisabled("  %s · Metal", _overlayMode ? "悬浮模式" : "普通模式");
-    ImGui::End();
+    // 底部状态条（仅普通模式，避开 Home 条）
+    if (!_overlayMode) {
+        ImGui::SetNextWindowPos(ImVec2(pad, H - 128.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(pw, 56.0f), ImGuiCond_Always);
+        ImGui::Begin("##st", NULL,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+        ImGui::Text("ImGui %s", IMGUI_VERSION);
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "  %.0f FPS", io.Framerate);
+        ImGui::SameLine();
+        ImGui::TextDisabled("  Metal · Relaxin · 17.1.2");
+        ImGui::End();
+    }
 }
 
 #pragma mark - 触摸 → ImGui
