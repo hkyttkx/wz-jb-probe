@@ -101,13 +101,13 @@ extern "C" kern_return_t mach_vm_region(vm_map_t target_task,
 
 // ── 找 GameAssembly 的内存区域 ───────────────────────
 typedef struct { uint64_t addr; uint64_t size; } Reg;
-static Reg g_regs[64];
+static Reg g_regs[1024];
 static int g_regCount = 0;
 
 static void scanRegions(void) {
     g_regCount = 0;
     uint64_t addr = 0;
-    while (addr < 0x0000FFFF00000000ULL && g_regCount < 64) {
+    while (addr < 0x0000FFFF00000000ULL && g_regCount < 1024) {
         char path[512] = {0};
         // PROC_PIDREGIONPATHINFO: {r_address, r_size, path...}
         struct { uint64_t address; uint64_t size; char path[1024]; char pad[2]; } ri;
@@ -142,7 +142,7 @@ static void scanRegionsMVM(void) {
     g_regCount = 0;
     if (g_task == MACH_PORT_NULL) { os_log(OS_LOG_DEFAULT, "[wzread] 无 task port"); return; }
     uint64_t addr = 0;
-    while (addr < 0x0000FFFF00000000ULL && g_regCount < 64) {
+    while (addr < 0x0000FFFF00000000ULL && g_regCount < 1024) {
         uint64_t size = 0;
         vm_region_basic_info_data_64_t info;
         mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
