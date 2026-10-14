@@ -83,7 +83,7 @@ static BOOL InvokeRect(RemoteCall *p, uint64_t target, const char *selName, CGRe
 // ─────────────────────────────────────────────────────
 //  初始化：越狱 kernel r/w + attach SpringBoard
 // ─────────────────────────────────────────────────────
-int SBDrawInit(void) {
+extern "C" int SBDrawInit(void) {
     if (g_sb) return 0;
 
     if (jb_load() != 0) {
@@ -111,7 +111,7 @@ int SBDrawInit(void) {
 }
 
 // 创建绘制层：一个 UIWindow + 一个红框 + 一行文字
-int SBDrawCreate(void) {
+extern "C" int SBDrawCreate(void) {
     if (!g_sb) return -1;
 
     uint64_t workspaceCls = C(g_sb, "SBMainWorkspace");
@@ -192,7 +192,7 @@ int SBDrawCreate(void) {
 }
 
 // 移动红框（验证"读取+更新"这一半）
-int SBDrawTick(void) {
+extern "C" int SBDrawTick(void) {
     if (!g_sb || !g_box) return -1;
     CGRect scr = UIScreen.mainScreen.bounds;
     g_boxIndex++;
@@ -208,11 +208,11 @@ int SBDrawTick(void) {
 }
 
 // 移除绘制层
-void SBDrawDestroy(void) {
+extern "C" void SBDrawDestroy(void) {
     if (!g_sb) return;
     if (g_window) M(g_sb, g_window, "setHidden:", 1, 0, 0, 0);
     os_log(OS_LOG_DEFAULT, "[sbdraw] 已隐藏");
     g_window = g_box = g_label = 0;
 }
 
-uint64_t SBDrawWindow(void) { return g_window; }
+extern "C" uint64_t SBDrawWindow(void) { return g_window; }
