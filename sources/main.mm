@@ -12,9 +12,18 @@
 #import <stdio.h>
 #import <stdlib.h>
 #import <unistd.h>
-#import <libproc.h>
 #import <mach/mach.h>
 #import <mach-o/dyld_images.h>
+
+// libproc：iOS SDK 不提供 libproc.h，自行声明
+extern "C" {
+int proc_listallpids(void *buffer, int buffersize);
+int proc_name(int pid, void *buffer, unsigned int buffersize);
+int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
+}
+#ifndef PROC_PIDPATHINFO_MAXSIZE
+#define PROC_PIDPATHINFO_MAXSIZE 4096
+#endif
 
 // ─────────────────────────────────────────────────────────────
 //  --read <pid> <out>：读取任意目标进程

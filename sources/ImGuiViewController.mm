@@ -12,7 +12,12 @@
 #import <limits.h>
 #import <stdlib.h>
 #import <ctype.h>
-#import <libproc.h>
+
+// libproc：自行声明（iOS SDK 无此头文件）
+extern "C" {
+int proc_listallpids(void *buffer, int buffersize);
+int proc_name(int pid, void *buffer, unsigned int buffersize);
+}
 
 #import "imgui.h"
 #import "imgui_impl_metal.h"
