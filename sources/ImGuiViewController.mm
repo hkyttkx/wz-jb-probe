@@ -75,8 +75,10 @@ static const float kBtnW = 250.0f;
     self.outputText = @"选一行进程 → 点「读取目标进程」。";
     _selRow = -1;
     _procCount = 0;
-    _menuVisible = YES;
-    _overlayMode = NO;
+    // HUD 宿主进程：默认悬浮 + 收起（只显示悬浮球）
+    extern int gHUDHostMode;
+    if (gHUDHostMode) { _overlayMode = YES; _menuVisible = NO; }
+    else              { _overlayMode = NO;  _menuVisible = YES; }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -157,9 +159,8 @@ static const float kBtnW = 250.0f;
     [self applyGeometry];
 }
 
-- (HUDWindow *)hudWin {
-    UIWindow *w = self.view.window;
-    return [w isKindOfClass:[HUDWindow class]] ? (HUDWindow *)w : nil;
+- (UIWindow *)hudWin {
+    return self.view.window;
 }
 
 - (NSString *)outPath {
@@ -247,7 +248,7 @@ static const float kBtnW = 250.0f;
     _overlayMode = on;
     _menuVisible = !on;
     [self applyGeometry];
-    HUDWindow *win = [self hudWin];
+    UIWindow *win = [self hudWin];
     if (win) win.hidden = on;
 }
 
@@ -282,7 +283,7 @@ static const float kBtnW = 250.0f;
 }
 
 - (void)applyGeometry {
-    HUDWindow *win = [self hudWin];
+    UIWindow *win = [self hudWin];
     if (!win) return;
 
     [UIView setAnimationsEnabled:NO];

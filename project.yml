@@ -26,6 +26,8 @@ targets:
     platform: iOS
     sources:
       - path: sources
+      - path: sources/headers
+      - path: sources/kif
       - path: Vendor/imgui
       - path: Resources
     dependencies:
@@ -44,8 +46,10 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Entitlements.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.wz.jbprobe
         PRODUCT_NAME: WZJBProbe
-        HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/sources
-        # 不再链接 dylib：改为运行时扫描 jbroot + dlopen 设备上那份
+        HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/sources $(SRCROOT)/sources/headers $(SRCROOT)/sources/kif
+        LIBRARY_SEARCH_PATHS: $(inherited) $(SRCROOT)/Vendor/tbd
+        # 私有框架用 tbd 链接（GraphicsServices/BackBoardServices 等）
+        OTHER_LDFLAGS: $(inherited) -lGraphicsServices -lBackBoardServices -lSpringBoardServices -lAssertionServices
         LD_RUNPATH_SEARCH_PATHS: $(inherited) @executable_path
         # 关闭对私有 API 的检查（我们用了大量 SPI）
         CLANG_WARN_DOCUMENTATION_COMMENTS: NO

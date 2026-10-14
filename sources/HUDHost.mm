@@ -1,133 +1,123 @@
 //
-//  HUDHost.h/.mm 合体 — root 子进程用的自建 UIApplication 宿主
-//  作用：脱离"前台 App"限制，接管系统 HID 事件，让 HUD 在后台也能触摸
+//  HUDHost.mm
+//  root HUD 宿主进程 —— 采用 TrollSpeed 验证过的事件机制：
+//    HID 事件 → AXEventRepresentation → TSEventFetcher → [UIApplication sendEvent:]
+//  注意：iOS 15.1+ 不能再用 _enqueueHIDEvent（会拖垮 SpringBoard）。
 //
 #import <UIKit/UIKit.h>
-#import <MetalKit/MetalKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <os/log.h>
+#import <notify.h>
 
-typedef struct __IOHIDEvent *IOHIDEvent;
-typedef struct __IOHIDService *IOHIDService;
+#import "HUDMainApplication.h"
+#import "HUDMainApplicationDelegate.h"
+#import "TSEventFetcher.h"
+#import "AXEventRepresentation.h"
+#import "AXEventHandInfoRepresentation.h"
+#import "AXEventPathInfoRepresentation.h"
+#import "UIApplication+Private.h"
+#import "BackboardServices.h"
 
-// 私有符号全部用 dlsym 动态取（都在 dyld shared cache 里，无需链接私有框架）
-#import <dlfcn.h>
-
-typedef void (*fn_v)(void);
-typedef void (*fn_i)(int);
-typedef void *(*fn_hid)(void (*)(void *, void *, IOHIDService, IOHIDEvent));
-typedef void (*fn_id)(id);
-
-static fn_v  p_GSInitialize      = NULL;
-static fn_v  p_UIAppInitialize   = NULL;
-static fn_id p_UIAppInstantiate  = NULL;
-static fn_i  p_GSEventInitialize = NULL;
-static fn_i  p_GSEventPushMode   = NULL;
-static fn_v  p_BKSDisplayStart   = NULL;
-static fn_hid p_BKSHIDRegister   = NULL;
-
-static void HUDHostResolve(void) {
-    dlopen("/System/Library/PrivateFrameworks/GraphicsServices.framework/GraphicsServices",
-           RTLD_NOW | RTLD_GLOBAL);
-    dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",
-           RTLD_NOW | RTLD_GLOBAL);
-    p_GSInitialize     = (fn_v)dlsym(RTLD_DEFAULT, "GSInitialize");
-    p_UIAppInitialize  = (fn_v)dlsym(RTLD_DEFAULT, "UIApplicationInitialize");
-    p_UIAppInstantiate = (fn_id)dlsym(RTLD_DEFAULT, "UIApplicationInstantiateSingleton");
-    p_GSEventInitialize= (fn_i)dlsym(RTLD_DEFAULT, "GSEventInitialize");
-    p_GSEventPushMode  = (fn_i)dlsym(RTLD_DEFAULT, "GSEventPushRunLoopMode");
-    p_BKSDisplayStart  = (fn_v)dlsym(RTLD_DEFAULT, "BKSDisplayServicesStart");
-    p_BKSHIDRegister   = (fn_hid)dlsym(RTLD_DEFAULT, "BKSHIDEventRegisterEventCallback");
-    os_log(OS_LOG_DEFAULT, "[HUDHost] syms ok=%d (GS=%p UIAI=%p UIAIS=%p BKS=%p HID=%p)",
-           (p_GSInitialize && p_UIAppInitialize && p_UIAppInstantiate),
-           p_GSInitialize, p_UIAppInitialize, p_UIAppInstantiate,
-           p_BKSDisplayStart, p_BKSHIDRegister);
+// 私有符号：由 Vendor/tbd 里的 .tbd 提供
+extern "C" {
+void GSInitialize(void);
+void UIApplicationInitialize(void);
+void BKSDisplayServicesStart(void);
+void GSEventInitialize(Boolean registerPurple);
+void GSEventPushRunLoopMode(CFStringRef mode);
+void UIApplicationInstantiateSingleton(id aclass);
+void *BKSHIDEventRegisterEventCallback(void (*cb)(void *, void *, IOHIDServiceRef, IOHIDEventRef));
+int HUDHostRun(void);
 }
 
-extern "C" int HUDHostRun(void);
-
-@interface UIApplication (HUDHostPrivate)
-- (void)_accessibilityInit;
-- (void)__completeAndRunAsPlugin;
-- (void)_enqueueHIDEvent:(IOHIDEvent)event;
-@end
-
-// 系统 HID 事件 → UIApplication
-static void HUDHIDCallback(void *target, void *refcon, IOHIDService service, IOHIDEvent event) {
+// ─────────────────────────────────────────────
+//  HID → AXEvent → UITouch（TrollSpeed 的做法）
+// ─────────────────────────────────────────────
+static void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHIDEventRef event)
+{
     static UIApplication *app = [UIApplication sharedApplication];
-    if (event && app) [app _enqueueHIDEvent:event];
-}
+    if (!event) return;
 
-@interface HUDHostApplication : UIApplication
-@end
-@implementation HUDHostApplication
-@end
+    static Class AXRepCls = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/AccessibilityUtilities.framework"] load];
+        AXRepCls = objc_getClass("AXEventRepresentation");
+    });
+    if (!AXRepCls) return;
 
-@interface HUDHostDelegate : UIResponder <UIApplicationDelegate>
-@property (nonatomic, strong) UIWindow *window;
-@end
+    AXEventRepresentation *rep = [AXRepCls representationWithHIDEvent:event
+                                                   hidStreamIdentifier:@"UIApplicationEvents"];
+    if (!rep) return;
 
-@implementation HUDHostDelegate
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *keyWindow = [[app windows] firstObject];
+        if (!keyWindow) return;
+        UIWindow *searchWin = keyWindow;
+        UIView *keyView = [searchWin hitTest:[rep location] withEvent:nil];
 
-- (BOOL)application:(UIApplication *)application
-        didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    // 复用同一个 ImGui 视图控制器
-    Class vcCls = NSClassFromString(@"ImGuiViewController");
-    UIViewController *vc = vcCls ? [[vcCls alloc] init] : [[UIViewController alloc] init];
+        UITouchPhase phase = UITouchPhaseEnded;
+        if ([rep isTouchDown])      phase = UITouchPhaseBegan;
+        else if ([rep isMove])      phase = UITouchPhaseMoved;
+        else if ([rep isCancel])    phase = UITouchPhaseCancelled;
+        else if ([rep isLift] || [rep isInRange] || [rep isInRangeLift])
+                                    phase = UITouchPhaseEnded;
 
-    Class winCls = NSClassFromString(@"HUDWindow");
-    UIWindow *win = winCls ? [[winCls alloc] initWithFrame:[UIScreen mainScreen].bounds]
-                           : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    win.windowLevel = 10000010.0;
-    win.backgroundColor = [UIColor clearColor];
-    win.rootViewController = vc;
-    win.hidden = NO;
-    [win makeKeyAndVisible];
-    self.window = win;
-
-    // 注册到 SpringBoard 窗口托管
-    SEL reg = NSSelectorFromString(@"registerWindowWithContextID:atLevel:");
-    Class hc = objc_getClass("SBSAccessibilityWindowHostingController");
-    if (hc && [win respondsToSelector:NSSelectorFromString(@"_contextId")]) {
-        id ctrl = [[hc alloc] init];
-        unsigned ctx = ((unsigned int (*)(id, SEL))objc_msgSend)(win, NSSelectorFromString(@"_contextId"));
-        if ([ctrl respondsToSelector:reg]) {
-            ((void (*)(id, SEL, unsigned, double))objc_msgSend)(ctrl, reg, ctx, win.windowLevel);
-            os_log(OS_LOG_DEFAULT, "[HUDHost] window registered ctx=%u", ctx);
+        NSInteger pointerId = [[[[rep handInfo] paths] firstObject] pathIdentity];
+        if (pointerId > 0) {
+            [TSEventFetcher receiveAXEventID:MIN(MAX(pointerId, 1), 98)
+                          atGlobalCoordinate:[rep location]
+                              withTouchPhase:phase
+                                    inWindow:searchWin
+                                      onView:keyView];
         }
-    }
-    os_log(OS_LOG_DEFAULT, "[HUDHost] 宿主启动完成");
-    return YES;
+    });
 }
 
-@end
+// ─────────────────────────────────────────────
+//  启动 root HUD 宿主
+// ─────────────────────────────────────────────
+// 让 UI 知道自己是 HUD 宿主进程（默认悬浮+收起）
+extern "C" int gHUDHostMode = 0;
 
-// 由 main.mm 在 --hud 模式下调用；此函数不返回
 extern "C" int HUDHostRun(void) {
     @autoreleasepool {
+        gHUDHostMode = 1;
+        os_log(OS_LOG_DEFAULT, "[HUDHost] 启动");
+
         [UIScreen initialize];
         CFRunLoopGetCurrent();
 
-        HUDHostResolve();
-        if (p_GSInitialize)     p_GSInitialize();
-        if (p_BKSDisplayStart)  p_BKSDisplayStart();
-        if (p_UIAppInitialize)  p_UIAppInitialize();
-        if (p_UIAppInstantiate) p_UIAppInstantiate([HUDHostApplication class]);
+        GSInitialize();
+        BKSDisplayServicesStart();
+        UIApplicationInitialize();
 
-        static HUDHostDelegate *delegate = nil;
-        delegate = [[HUDHostDelegate alloc] init];
+        UIApplicationInstantiateSingleton(objc_getClass("HUDMainApplication"));
+
+        static id<UIApplicationDelegate> delegate = nil;
+        delegate = [[objc_getClass("HUDMainApplicationDelegate") alloc] init];
         [[UIApplication sharedApplication] setDelegate:delegate];
-
         [[UIApplication sharedApplication] _accessibilityInit];
-        [[UIApplication sharedApplication] __completeAndRunAsPlugin];
 
         [NSRunLoop currentRunLoop];
-        if (p_BKSHIDRegister) p_BKSHIDRegister(HUDHIDCallback);   // ★ 接管全局触摸
 
-        if (p_GSEventInitialize) p_GSEventInitialize(0);
-        if (p_GSEventPushMode)
-            ((void (*)(CFStringRef))p_GSEventPushMode)(kCFRunLoopDefaultMode);
+        // ★ 接管系统 HID
+        BKSHIDEventRegisterEventCallback(_HUDEventCallback);
+
+        GSEventInitialize(0);
+        GSEventPushRunLoopMode(kCFRunLoopDefaultMode);
+
+        [[UIApplication sharedApplication] __completeAndRunAsPlugin];
+
+        // SpringBoard 重启后自动恢复
+        static int sbToken;
+        notify_register_dispatch("SBSpringBoardDidLaunchNotification", &sbToken,
+                                 dispatch_get_main_queue(), ^(int token) {
+            notify_cancel(token);
+            os_log(OS_LOG_DEFAULT, "[HUDHost] SpringBoard 重启，退出宿主");
+            kill(getpid(), SIGKILL);
+        });
 
         os_log(OS_LOG_DEFAULT, "[HUDHost] 进入 CFRunLoop");
         CFRunLoopRun();
