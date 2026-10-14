@@ -92,6 +92,9 @@ static const float kBtnW = 250.0f;
     _hasBallPos = NO;
     _started = NO;
     _showDraw = YES;
+    strlcpy(_gameName, "sc", sizeof(_gameName));
+    _gamePid = 0;
+    _gameConnected = NO;
     _hasPanelPos = NO;
     {
         NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -565,9 +568,6 @@ static const float kBtnW = 250.0f;
 - (void)stopHudFromMain {
     [self stopHUDHost];
     _hudRunning = NO;
-    strlcpy(_gameName, "sc", sizeof(_gameName));
-    _gamePid = 0;
-    _gameConnected = NO;
 }
 
 // 双击悬浮球 = 直接展开功能菜单（不经过中间态）

@@ -133,6 +133,11 @@ static int do_wz_read(const char *targetArg, const char *outpath) {
         off += snprintf(buf+off, sizeof(buf)-off, "jb_load 失败: %s\n", jb_status());
         break;
     }
+    // ★ 关键：必须初始化 primitives，否则 proc_find 拿不到任何进程
+    {
+        int ir = jb_init_primitives();
+        off += snprintf(buf+off, sizeof(buf)-off, "init_primitives = %d\n", ir);
+    }
     pid_t pid = wz_resolve_pid(targetArg);
     off += snprintf(buf+off, sizeof(buf)-off, "解析到 pid = %d\n", pid);
     if (pid <= 1) { off += snprintf(buf+off, sizeof(buf)-off, "找不到目标进程\n"); break; }
