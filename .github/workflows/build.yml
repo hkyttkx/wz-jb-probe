@@ -58,7 +58,9 @@ jobs:
           set -e
           APP="${{ env.APP_PATH }}"
           echo "APP=$APP"
-          # 不再打包 dylib：运行时扫描 jbroot 并 dlopen 设备上那份
+          # ds_compat 静态引用 libjailbreak 符号，需随包带上
+          cp Vendor/libjailbreak.dylib "$APP/"
+          cp Vendor/libchoma.dylib "$APP/"
           ldid -SEntitlements.plist "$APP/$(basename $APP .app)"
           echo "--- 已签名的 entitlements ---"
           ldid -e "$APP/$(basename $APP .app)" | head -40 || true
