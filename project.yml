@@ -17,6 +17,7 @@ settings:
     ONLY_ACTIVE_ARCH: NO
     ENABLE_BITCODE: NO
     CLANG_ENABLE_MODULES: YES
+    OTHER_CFLAGS: $(inherited) -fmodules -fcxx-modules
     CLANG_CXX_LANGUAGE_STANDARD: gnu++17
     GCC_C_LANGUAGE_STANDARD: gnu11
 

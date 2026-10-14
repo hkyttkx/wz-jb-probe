@@ -40,13 +40,14 @@ static int do_springboard_test(const char *outpath) {
     off += snprintf(buf + off, sizeof(buf) - off,
                     "uid = %d (root=%s)\n", (int)getuid(), getuid() == 0 ? "是" : "否");
 
+    do {
+
     // ① 越狱拿 kernel r/w（DS 的"根"）
     if (jb_load() != 0) {
         off += snprintf(buf + off, sizeof(buf) - off, "jb_load 失败: %s\n", jb_status());
-        goto writeout;
+        break;
     }
     {
-        extern "C" void ds_sync_kernel_info(void);
         ds_sync_kernel_info();
     }
     int r = jb_init_primitives();
@@ -56,7 +57,6 @@ static int do_springboard_test(const char *outpath) {
 
     // ② 定位 SpringBoard
     {
-        extern "C" uint64_t proc_find_by_name(const char *);
         uint64_t sbProc = proc_find_by_name("SpringBoard");
         off += snprintf(buf + off, sizeof(buf) - off, "SpringBoard proc = 0x%llx\n", sbProc);
     }
@@ -66,14 +66,14 @@ static int do_springboard_test(const char *outpath) {
         Class rcCls = NSClassFromString(@"RemoteCall");
         if (!rcCls) {
             off += snprintf(buf + off, sizeof(buf) - off, "RemoteCall 类不存在\n");
-            goto writeout;
+            break;
         }
         RemoteCall *sb = [[rcCls alloc] initWithProcess:@"SpringBoard" useMigFilterBypass:NO];
         if (!sb || sb.trojanMem == 0 || sb.pid <= 1) {
             off += snprintf(buf + off, sizeof(buf) - off,
                             "attach 失败 (pid=%d trojanMem=0x%llx)\n", sb ? sb.pid : -1,
                             sb ? sb.trojanMem : 0);
-            goto writeout;
+            break;
         }
         off += snprintf(buf + off, sizeof(buf) - off,
                         "★ attach OK  pid=%d trojanMem=0x%llx\n", sb.pid, sb.trojanMem);
@@ -107,7 +107,8 @@ static int do_springboard_test(const char *outpath) {
                         "\n=== DS RemoteCall 在越狱环境下可用 ===\n");
     }
 
-writeout:
+    } while (0);
+
     {
         FILE *f = fopen(outpath, "w");
         if (!f) return 3;
