@@ -101,6 +101,16 @@ static int do_springboard_test(const char *outpath) {
                     "init_primitives = %d  %s\n", r, r == 0 ? "OK" : "FAIL");
     if (r != 0) break;
 
+    // ①.5 诊断
+    {
+        extern "C" void ds_diag(char *out, size_t n, const char *tag);
+        extern "C" uint64_t ds_kread64(uint64_t a);
+        char d[512]; ds_diag(d, sizeof(d), "after-init");
+        off += snprintf(buf + off, sizeof(buf) - off, "%s\n", d);
+        uint64_t t = ds_kread64(0xfffffff007004000ULL + 0x100);
+        off += snprintf(buf + off, sizeof(buf) - off, "试探读 kbase+0x100 = 0x%llx\n", t);
+    }
+
     // ② 定位 SpringBoard
     {
         uint64_t sbProc = proc_find_by_name("SpringBoard");
