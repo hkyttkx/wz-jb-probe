@@ -20,6 +20,7 @@ extern "C" {
 int proc_listallpids(void *buffer, int buffersize);
 int proc_name(int pid, void *buffer, unsigned int buffersize);
 int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
+int HUDHostRun(void);      // root HUD 宿主（HUDHost.mm）
 }
 #ifndef PROC_PIDPATHINFO_MAXSIZE
 #define PROC_PIDPATHINFO_MAXSIZE 4096
