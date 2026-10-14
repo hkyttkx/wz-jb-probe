@@ -53,7 +53,7 @@ static int do_springboard_test(const char *outpath) {
     int r = jb_init_primitives();
     off += snprintf(buf + off, sizeof(buf) - off,
                     "init_primitives = %d  %s\n", r, r == 0 ? "OK" : "FAIL");
-    if (r != 0) goto writeout;
+    if (r != 0) break;
 
     // ② 定位 SpringBoard
     {
