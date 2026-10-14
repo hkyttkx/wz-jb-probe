@@ -49,7 +49,7 @@ static fn_u64_i   p_proc_find = NULL;
 static fn_u64_u64 p_proc_task = NULL;
 
 // 由 jb_load() 之后调用，绑定符号
-int ds_compat_bind(void *h) {
+extern "C" int ds_compat_bind(void *h) {
     if (!h) return -1;
     p_jb_init   = (fn_int_v)     dlsym(h, "jbclient_initialize_primitives");
     p_kread64   = (fn_u64_u64)   dlsym(h, "kread64");
