@@ -151,7 +151,7 @@ static void scanRegionsMVM(void) {
                                           &info, &cnt, &obj);
         if (kr != KERN_SUCCESS || size == 0) break;
         // 只记录可读且较大的区域（模块/堆）
-        if ((info.protection & 1) && size >= 0x1000) {
+        if ((info.protection & 1) && size >= 0x100000) {   // ★ 只留 ≥1MB 的大区域
             g_regs[g_regCount].addr = addr;
             g_regs[g_regCount].size = size;
             g_regCount++;
@@ -176,7 +176,7 @@ extern "C" void WZReadProbe(char *out, size_t n) {
     o += snprintf(out+o, n-o, "IL2CPP模块: base=0x%llx size=0x%llx\n", g_ga_base, g_ga_size);
     o += snprintf(out+o, n-o, "主二进制:  base=0x%llx size=0x%llx\n", g_main_base, g_main_size);
     o += snprintf(out+o, n-o, "regions(%d):\n", g_regCount);
-    for (int i = 0; i < g_regCount && o < (int)n - 80; i++) {
+    for (int i = 0; i < g_regCount && i < 60 && o < (int)n - 80; i++) {
         char p[256]={0};
         struct { uint64_t address; uint64_t size; char path[1024]; char pad[2]; } ri;
         memset(&ri,0,sizeof(ri));
@@ -245,7 +245,7 @@ static void findModulesByMachO(void) {
             os_log(OS_LOG_DEFAULT, "[wzread] Mach-O @0x%llx size=0x%llx type=%u",
                    g_regs[i].addr, sz, filetype);
             // 大模块（>8MB）很可能是 UnityFramework
-            if (sz > 0x800000 && !g_ga_base) {
+            if (sz > 0x1000000 && !g_ga_base) {   // ★ 提门槛到 16MB（UnityFramework 级别）
                 g_ga_base = g_regs[i].addr;
                 g_ga_size = sz;
                 os_log(OS_LOG_DEFAULT, "[wzread] 疑似 IL2CPP 模块 @0x%llx (0x%llx)",
