@@ -87,6 +87,61 @@ static int readable(uint64_t p) {
     return rd(p, &t, 4) == 0;
 }
 
+
+// ── 手写声明（iOS SDK 禁用了 mach_vm.h）──
+typedef int vm_region_flavor_t;
+typedef struct vm_region_basic_info_64 {
+    int      protection;
+    int      max_protection;
+    uint32_t inheritance;
+    uint8_t  shared;
+    uint8_t  reserved;
+    uint32_t offset;
+    int      behavior;
+    uint16_t user_wired_count;
+} vm_region_basic_info_data_64_t;
+#define VM_REGION_BASIC_INFO_64 9
+#define VM_REGION_BASIC_INFO_COUNT_64 9
+extern "C" kern_return_t mach_vm_region(vm_map_t target_task,
+                                        uint64_t *address,
+                                        uint64_t *size,
+                                        vm_region_flavor_t flavor,
+                                        void *info,
+                                        unsigned *infoCnt,
+                                        mach_port_t *object_name);
+
+// 用 task port 枚举区域（regions 用地址+大小，路径另外查）
+static void scanRegionsMVM(void) {
+    g_regCount = 0;
+    if (g_task == MACH_PORT_NULL) { os_log(OS_LOG_DEFAULT, "[wzread] 无 task port"); return; }
+    uint64_t addr = 0;
+    while (addr < 0x0000FFFF00000000ULL && g_regCount < 64) {
+        uint64_t size = 0;
+        vm_region_basic_info_data_64_t info;
+        unsigned cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj = MACH_PORT_NULL;
+        kern_return_t kr = mach_vm_region(g_task, &addr, &size, VM_REGION_BASIC_INFO_64,
+                                          &info, &cnt, &obj);
+        if (kr != KERN_SUCCESS || size == 0) break;
+        // 只记录可读且较大的区域（模块/堆）
+        if ((info.protection & 1) && size >= 0x1000) {
+            g_regs[g_regCount].addr = addr;
+            g_regs[g_regCount].size = size;
+            g_regCount++;
+        }
+        addr += size;
+    }
+    // 路径信息另查（proc_pidinfo 有就用，没有就算了）
+    for (int i = 0; i < g_regCount; i++) {
+        char path[512] = {0};
+        // 尝试用 sysctl/proc_pidinfo 补路径（失败不影响）
+        (void)path;
+    }
+    snprintf(g_status, sizeof(g_status),
+             "pid=%d proc=0x%llx task=%d regions=%d",
+             g_pid, g_proc, g_task, g_regCount);
+}
+
 // ── 找 GameAssembly 的内存区域 ───────────────────────
 typedef struct { uint64_t addr; uint64_t size; } Reg;
 static Reg g_regs[64];
@@ -156,7 +211,7 @@ extern "C" int WZReadInit(pid_t pid) {
     }
     snprintf(g_status,sizeof(g_status),"ok proc=0x%llx task=%d", g_proc, g_task);
 
-    scanRegions();
+    scanRegionsMVM();       // ★ 用 task port 枚举（proc_pidinfo 对别的进程不给）
     if (!g_ga_base) {
         snprintf(g_status,sizeof(g_status),"未找到 IL2CPP 模块（regions=%d main=0x%llx）",
                  g_regCount, g_main_base);
@@ -187,8 +242,33 @@ static int checkBattleObj(uint64_t o) {
     return ok >= 3;
 }
 
+// 通过扫描区域开头找 Mach-O 模块（拿不到路径时的替代）
+static void findModulesByMachO(void) {
+    for (int i = 0; i < g_regCount; i++) {
+        uint32_t magic = 0;
+        if (rd(g_regs[i].addr, &magic, 4) != 0) continue;
+        if (magic == 0xFEEDFACF || magic == 0xFEEDFACE) {
+            // Mach-O 头 → 读文件类型
+            uint32_t filetype = 0;
+            rd(g_regs[i].addr + 12, &filetype, 4);
+            uint64_t sz = g_regs[i].size;
+            os_log(OS_LOG_DEFAULT, "[wzread] Mach-O @0x%llx size=0x%llx type=%u",
+                   g_regs[i].addr, sz, filetype);
+            // 大模块（>8MB）很可能是 UnityFramework
+            if (sz > 0x800000 && !g_ga_base) {
+                g_ga_base = g_regs[i].addr;
+                g_ga_size = sz;
+                os_log(OS_LOG_DEFAULT, "[wzread] 疑似 IL2CPP 模块 @0x%llx (0x%llx)",
+                       g_ga_base, g_ga_size);
+            }
+            if (!g_main_base) { g_main_base = g_regs[i].addr; g_main_size = sz; }
+        }
+    }
+}
+
 extern "C" uint64_t WZFindBattleIns(void) {
     if (g_battleIns && checkBattleObj(g_battleIns)) return g_battleIns;
+    if (!g_ga_base) findModulesByMachO();
     if (!g_ga_base) {
         // 兜底：用主二进制作为扫描范围
         if (g_main_base) { g_ga_base = g_main_base; g_ga_size = g_main_size; }
