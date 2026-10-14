@@ -29,6 +29,7 @@ targets:
       - path: sources/headers
       - path: sources/kif
       - path: sources/taskrop
+      - path: sources/choma
       - path: Vendor/imgui
       - path: Resources
     dependencies:
