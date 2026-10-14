@@ -71,6 +71,10 @@ jobs:
           echo "--- 布置结果 ---"
           # 校验每个依赖是否能被 dyld 解析
           otool -L "$APP/$(basename $APP .app)" | head -20 || true
+          # install_name_tool 会破坏签名，dylib 全部重新伪签名
+          for d in libchoma libxpf libgrabkernel2; do
+            ldid -S "$APP/$d.dylib" || true
+          done
           ldid -SEntitlements.plist "$APP/$(basename $APP .app)"
           echo "--- 已签名的 entitlements ---"
           ldid -e "$APP/$(basename $APP .app)" | head -40 || true
