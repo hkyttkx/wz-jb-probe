@@ -30,6 +30,7 @@ uint64_t ds_kread64(uint64_t a);
 void     offsets_init(void);
 extern uint64_t kernel_base;
 void     init_offsets(void);
+int      ds_run(void);
 }
 #ifndef PROC_PIDPATHINFO_MAXSIZE
 #define PROC_PIDPATHINFO_MAXSIZE 4096
@@ -99,25 +100,22 @@ static int do_springboard_test(const char *outpath) {
         off += snprintf(buf + off, sizeof(buf) - off, "jb_load 失败: %s\n", jb_status());
         break;
     }
-    // ★ 顺序：先拿 kernel r/w → 再同步内核信息 → 最后初始化偏移表
-    int r = jb_init_primitives();
-    off += snprintf(buf + off, sizeof(buf) - off,
-                    "init_primitives = %d  %s\n", r, r == 0 ? "OK" : "FAIL");
-    if (r != 0) break;
-    ds_sync_kernel_info();
+    // 越狱当"根"只有一件事要用：用户态跨进程读（proc_vreadbuf）
+    // 内核读写交给 DS 自己的漏洞实现
     offsets_init();
     init_offsets();
-    off += snprintf(buf + off, sizeof(buf) - off, "offsets/kmem 初始化完成\n");
+    off += snprintf(buf + off, sizeof(buf) - off, "offsets 初始化完成\n");
 
-    // ①.5 诊断
+    int dr = ds_run();
+    off += snprintf(buf + off, sizeof(buf) - off,
+                    "ds_run() = %d  %s\n", dr, dr == 0 ? "OK（DS 内核 r/w 就绪）" : "FAIL");
+    if (dr != 0) break;
+
+    off += snprintf(buf + off, sizeof(buf) - off,
+                    "kernel_base = 0x%llx  slide = 0x%llx\n", kernel_base, kernel_slide);
     {
-        char pb[2048];
-        ds_probe_basics(pb, sizeof(pb));
-        off += snprintf(buf + off, sizeof(buf) - off, "%s", pb);
-        char d[1024]; ds_diag(d, sizeof(d), "after-init");
-        off += snprintf(buf + off, sizeof(buf) - off, "%s\n", d);
         uint64_t t = kernel_base ? ds_kread64(kernel_base + 0x100) : 0;
-        off += snprintf(buf + off, sizeof(buf) - off, "试探读 kbase+0x100 = 0x%llx\n", t);
+        off += snprintf(buf + off, sizeof(buf) - off, "ds_kread64(kbase+0x100) = 0x%llx\n", t);
     }
 
     // ② 定位 SpringBoard

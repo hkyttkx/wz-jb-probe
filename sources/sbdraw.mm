@@ -16,6 +16,7 @@ int  jb_init_primitives(void);
 const char *jb_status(void);
 void offsets_init(void);
 void init_offsets(void);
+int  ds_run(void);
 }
 
 // ── 复用的远程对象句柄 ────────────────────────────────
@@ -88,27 +89,26 @@ static BOOL InvokeRect(RemoteCall *p, uint64_t target, const char *selName, CGRe
 extern "C" int SBDrawInit(void) {
     if (g_sb) return 0;
 
+    // ① libjailbreak：绑用户态跨进程读（proc_vreadbuf）
     if (jb_load() != 0) {
         os_log_error(OS_LOG_DEFAULT, "[sbdraw] jb_load 失败: %{public}s", jb_status());
         return -1;
     }
-    // ★ 顺序很重要：先拿 kernel r/w，再同步内核信息，最后初始化偏移表
-    int r = jb_init_primitives();
-    if (r != 0) {
-        os_log_error(OS_LOG_DEFAULT, "[sbdraw] primitives 失败 %d", r);
-        return -2;
-    }
-    ds_sync_kernel_info();
-    // ★ 关键：初始化 DS 的偏移表（571 条）。不调的话 off_* 全 0，进程链表遍历必挂
+
+    // ② DS 内核漏洞：拿真正的 kernel r/w（ds_kread64/kwrite64）
     {
         offsets_init();
         init_offsets();
-        os_log(OS_LOG_DEFAULT, "[sbdraw] offsets initialized");
+        int dr = ds_run();
+        os_log(OS_LOG_DEFAULT, "[sbdraw] ds_run = %d", dr);
+        if (dr != 0) return -2;
     }
 
+    // ③ 定位 SpringBoard
     uint64_t sbProc = proc_find_by_name("SpringBoard");
     if (!sbProc) { os_log_error(OS_LOG_DEFAULT, "[sbdraw] 找不到 SpringBoard"); return -3; }
 
+    // ④ DS 的 RemoteCall attach
     g_sb = [[RemoteCall alloc] initWithProcess:@"SpringBoard" useMigFilterBypass:NO];
     if (!g_sb || g_sb.trojanMem == 0 || g_sb.pid <= 1) {
         os_log_error(OS_LOG_DEFAULT, "[sbdraw] attach 失败");
