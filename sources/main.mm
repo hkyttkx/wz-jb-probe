@@ -10,6 +10,8 @@
 #import <string.h>
 #import <stdio.h>
 #import <unistd.h>
+#import <stdlib.h>
+#import <libproc.h>
 
 // ── root 子进程：做探测，把结果写到 outfile ──────────
 static int do_probe_and_write(const char *outpath) {
@@ -58,6 +60,36 @@ static int do_probe_and_write(const char *outpath) {
             }
             off += snprintf(buf + off, sizeof(buf) - off,
                             "\n=== 结论 ===\nlibjailbreak 可用，跨进程读写具备。\n");
+        }
+    }
+
+    FILE *f = fopen(outpath, "w");
+    if (!f) return 3;
+    fwrite(buf, 1, off, f);
+    fclose(f);
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    @autoreleasepool {
+        if (argc > 2 && strcmp(argv[1], "--probe") == 0) {
+            return do_probe_and_write(argv[2]);
+        }
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
+    }
+}
+ for (int i = 0; i < got && shown < 80; i++) {
+                    char nm[256] = {0};
+                    if (proc_name(pids[i], nm, sizeof(nm)) <= 0) continue;
+                    if (nm[0] == 0) continue;
+                    off += snprintf(buf + off, sizeof(buf) - off,
+                                    "  %5d  %s\n", (int)pids[i], nm);
+                    shown++;
+                }
+                free(pids);
+            }
+        } else {
+            off += snprintf(buf + off, sizeof(buf) - off, "  proc_listallpids 失败\n");
         }
     }
 
