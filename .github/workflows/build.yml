@@ -58,13 +58,17 @@ jobs:
           set -e
           APP="${{ env.APP_PATH }}"
           echo "APP=$APP"
-          # 三个 dylib 的 install_name 不同，必须各放对位置
-          cp Vendor/libchoma.dylib "$APP/"                       # @loader_path/
-          mkdir -p "$APP/Frameworks"
-          cp Vendor/libxpf.dylib "$APP/Frameworks/"              # @executable_path/Frameworks/
-          cp Vendor/libgrabkernel2.dylib "$APP/Frameworks/"      # @rpath/ (rpath 含 Frameworks)
+          # 全部放顶层，并把 install_name 统一改成 @loader_path/
+          # （@rpath/ 和 @executable_path/Frameworks/ 在 TrollStore 重装后易解析失败）
+          cp Vendor/libchoma.dylib Vendor/libxpf.dylib Vendor/libgrabkernel2.dylib "$APP/"
+          for d in libchoma libxpf libgrabkernel2; do
+            install_name_tool -id "@loader_path/$d.dylib" "$APP/$d.dylib" || true
+          done
+          BIN="$APP/$(basename $APP .app)"
+          install_name_tool -change @rpath/libgrabkernel2.dylib @loader_path/libgrabkernel2.dylib "$BIN" || true
+          install_name_tool -change @executable_path/Frameworks/libxpf.dylib @loader_path/libxpf.dylib "$BIN" || true
+          install_name_tool -change @loader_path/libxpf.dylib @loader_path/libxpf.dylib "$BIN" || true
           echo "--- 布置结果 ---"
-          ls -la "$APP/" "$APP/Frameworks/"
           # 校验每个依赖是否能被 dyld 解析
           otool -L "$APP/$(basename $APP .app)" | head -20 || true
           ldid -SEntitlements.plist "$APP/$(basename $APP .app)"
