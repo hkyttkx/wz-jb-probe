@@ -55,6 +55,3 @@ extern "C" int jb_read_process(uint64_t proc, uint64_t addr, void *buf, size_t l
 extern "C" int jb_write_process(uint64_t proc, uint64_t addr, const void *buf, size_t len) {
     return p_proc_vwrite ? p_proc_vwrite(proc, (const void *)addr, buf, len) : -1;
 }
-extern "C" uint64_t jb_proc_self(void) {
-    return p_proc_self ? p_proc_self() : 0;
-}
