@@ -32,80 +32,69 @@ static int do_read_target(pid_t target, const char *outpath) {
     char buf[16384];
     int off = 0;
 
-    uid_t u = getuid();
-    off += snprintf(buf + off, sizeof(buf) - off, "uid = %d (root=%s)\n", (int)u, u == 0 ? "是" : "否");
+    do {
+        uid_t u = getuid();
+        off += snprintf(buf + off, sizeof(buf) - off, "uid = %d (root=%s)\n", (int)u, u == 0 ? "是" : "否");
 
-    // 目标基本信息（用户态 API）
-    char name[256] = {0};
-    proc_name(target, name, sizeof(name));
-    char pathbuf[PROC_PIDPATHINFO_MAXSIZE] = {0};
-    proc_pidpath(target, pathbuf, sizeof(pathbuf));
-    off += snprintf(buf + off, sizeof(buf) - off,
-                    "目标 pid = %d\n  name = %s\n  path = %s\n",
-                    (int)target, name, pathbuf);
-
-    if (jb_load() != 0) {
-        off += snprintf(buf + off, sizeof(buf) - off, "jb_load 失败\n%s\n", jb_status());
-        goto writeout;
-    }
-    int r = jb_init_primitives();
-    off += snprintf(buf + off, sizeof(buf) - off, "init_primitives() = %d %s\n",
-                    r, r == 0 ? "OK" : "FAIL");
-    if (r != 0) goto writeout;
-
-    // 内核里定位该进程
-    uint64_t proc = jb_proc_find(target);
-    off += snprintf(buf + off, sizeof(buf) - off, "jb_proc_find = 0x%llx\n", proc);
-    if (!proc) {
-        off += snprintf(buf + off, sizeof(buf) - off, "找不到该进程\n");
-        goto writeout;
-    }
-
-    // task port（有 task_for_pid-allow，应可用）
-    task_t task = MACH_PORT_NULL;
-    kern_return_t kr = task_for_pid(mach_task_self(), target, &task);
-    off += snprintf(buf + off, sizeof(buf) - off, "task_for_pid = %d (%s)\n",
-                    kr, kr == KERN_SUCCESS ? "OK" : mach_error_string(kr));
-    if (kr != KERN_SUCCESS) {
-        jb_proc_rele(proc);
-        goto writeout;
-    }
-
-    // 主模块基址：TASK_DYLD_INFO -> all_image_info_addr -> 第一个 image
-    struct task_dyld_info dyldInfo = {0};
-    mach_msg_type_number_t cnt = TASK_DYLD_INFO_COUNT;
-    kr = task_info(task, TASK_DYLD_INFO, (task_info_t)&dyldInfo, &cnt);
-    off += snprintf(buf + off, sizeof(buf) - off, "task_info(TASK_DYLD_INFO) = %d\n", kr);
-    if (kr == KERN_SUCCESS && dyldInfo.all_image_info_addr) {
-        struct dyld_all_image_infos infos = {0};
-        int vr = jb_proc_vreadbuf(proc, (const void *)dyldInfo.all_image_info_addr,
-                                  &infos, sizeof(infos));
+        // 目标基本信息（用户态 API）
+        char nm[256] = {0};
+        char pathbuf[PROC_PIDPATHINFO_MAXSIZE] = {0};
+        proc_name(target, nm, sizeof(nm));
+        proc_pidpath(target, pathbuf, sizeof(pathbuf));
         off += snprintf(buf + off, sizeof(buf) - off,
-                        "读 dyld_all_image_infos = %d, imageCount = %u\n",
-                        vr, infos.infoArrayCount);
-        if (vr == 0 && infos.infoArray && infos.infoArrayCount > 0) {
-            struct dyld_image_info first = {0};
-            jb_proc_vreadbuf(proc, (const void *)infos.infoArray, &first, sizeof(first));
-            uint64_t base = (uint64_t)first.imageLoadAddress;
+                        "目标 pid = %d\n  name = %s\n  path = %s\n", (int)target, nm, pathbuf);
+
+        if (jb_load() != 0) {
+            off += snprintf(buf + off, sizeof(buf) - off, "jb_load 失败\n%s\n", jb_status());
+            break;
+        }
+        int r = jb_init_primitives();
+        off += snprintf(buf + off, sizeof(buf) - off, "init_primitives() = %d %s\n",
+                        r, r == 0 ? "OK" : "FAIL");
+        if (r != 0) break;
+
+        uint64_t proc = jb_proc_find(target);
+        off += snprintf(buf + off, sizeof(buf) - off, "jb_proc_find = 0x%llx\n", proc);
+        if (!proc) { off += snprintf(buf + off, sizeof(buf) - off, "找不到该进程\n"); break; }
+
+        task_t task = MACH_PORT_NULL;
+        kern_return_t kr = task_for_pid(mach_task_self(), target, &task);
+        off += snprintf(buf + off, sizeof(buf) - off, "task_for_pid = %d (%s)\n",
+                        kr, kr == KERN_SUCCESS ? "OK" : mach_error_string(kr));
+        if (kr != KERN_SUCCESS) { jb_proc_rele(proc); break; }
+
+        struct task_dyld_info dyldInfo = {0};
+        mach_msg_type_number_t cnt = TASK_DYLD_INFO_COUNT;
+        kr = task_info(task, TASK_DYLD_INFO, (task_info_t)&dyldInfo, &cnt);
+        off += snprintf(buf + off, sizeof(buf) - off, "task_info(TASK_DYLD_INFO) = %d\n", kr);
+        if (kr == KERN_SUCCESS && dyldInfo.all_image_info_addr) {
+            struct dyld_all_image_infos infos = {0};
+            int vr = jb_proc_vreadbuf(proc, (const void *)dyldInfo.all_image_info_addr,
+                                      &infos, sizeof(infos));
             off += snprintf(buf + off, sizeof(buf) - off,
-                            "主模块基址 = 0x%llx\n", base);
-            if (base) {
-                uint32_t magic = 0;
-                int mr = jb_proc_vreadbuf(proc, (const void *)base, &magic, sizeof(magic));
-                off += snprintf(buf + off, sizeof(buf) - off,
-                                "读基址 magic = 0x%08X %s (读取返回 %d)\n",
-                                magic,
-                                (magic == 0xFEEDFACF || magic == 0xFEEDFACE ||
-                                 magic == 0xCEFAEDFE || magic == 0xCFFAEDFE) ? "✓ Mach-O 有效" : "?",
-                                mr);
+                            "读 dyld_all_image_infos = %d, imageCount = %u\n",
+                            vr, infos.infoArrayCount);
+            if (vr == 0 && infos.infoArray && infos.infoArrayCount > 0) {
+                struct dyld_image_info first = {0};
+                jb_proc_vreadbuf(proc, (const void *)infos.infoArray, &first, sizeof(first));
+                uint64_t base = (uint64_t)first.imageLoadAddress;
+                off += snprintf(buf + off, sizeof(buf) - off, "主模块基址 = 0x%llx\n", base);
+                if (base) {
+                    uint32_t magic = 0;
+                    int mr = jb_proc_vreadbuf(proc, (const void *)base, &magic, sizeof(magic));
+                    off += snprintf(buf + off, sizeof(buf) - off,
+                                    "读基址 magic = 0x%08X %s (ret=%d)\n", magic,
+                                    (magic == 0xFEEDFACF || magic == 0xFEEDFACE ||
+                                     magic == 0xCEFAEDFE || magic == 0xCFFAEDFE) ? "✓ Mach-O 有效" : "?",
+                                    mr);
+                }
             }
         }
-    }
 
-    jb_proc_rele(proc);
-    off += snprintf(buf + off, sizeof(buf) - off, "\n=== 跨进程读取成功 ===\n");
+        jb_proc_rele(proc);
+        off += snprintf(buf + off, sizeof(buf) - off, "\n=== 跨进程读取完成 ===\n");
+    } while (0);
 
-writeout:
     {
         FILE *f = fopen(outpath, "w");
         if (!f) return 3;
