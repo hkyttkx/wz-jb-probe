@@ -46,6 +46,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Entitlements.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.wz.jbprobe
         PRODUCT_NAME: WZJBProbe
+        GCC_PREFIX_HEADER: sources/prefix.pch
         HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/sources $(SRCROOT)/sources/headers $(SRCROOT)/sources/kif
         LIBRARY_SEARCH_PATHS: $(inherited) $(SRCROOT)/Vendor/tbd
         # 私有框架用 tbd 链接（GraphicsServices/BackBoardServices 等）
