@@ -1,0 +1,74 @@
+name: Build JBProbe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          brew install xcodegen ldid
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate
+          ls -la
+
+      - name: Build (no code sign)
+        run: |
+          xcodebuild \
+            -project WZJBProbe.xcodeproj \
+            -target WZJBProbe \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Locate app bundle
+        run: |
+          find build -name "*.app" -maxdepth 6 -type d
+          echo "APP_PATH=$(find build -name 'WZJBProbe.app' -maxdepth 6 -type d | head -1)" >> $GITHUB_ENV
+
+      - name: Bundle dylibs + pseudo-sign with ldid
+        run: |
+          set -e
+          APP="${{ env.APP_PATH }}"
+          echo "APP=$APP"
+          # libjailbreak 的 install_name 是 @loader_path/libjailbreak.dylib，
+          # 所以 dylib 必须和主可执行文件放在同一目录（.app/ 顶层）
+          cp Vendor/libjailbreak.dylib "$APP/"
+          cp Vendor/libchoma.dylib "$APP/"
+          # ldid 伪签名（带 entitlements）
+          ldid -SEntitlements.plist "$APP/$(basename $APP .app)"
+          # 校验签名
+          ldid -e "$APP/$(basename $APP .app)" | head -30 || true
+          ls -la "$APP/"
+
+      - name: Package IPA
+        run: |
+          set -e
+          APP="${{ env.APP_PATH }}"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry WZJBProbe.ipa Payload
+          ls -la WZJBProbe.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WZJBProbe-ipa
+          path: WZJBProbe.ipa
+          if-no-files-found: error

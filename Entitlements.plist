@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 越狱环境必需：允许以平台应用身份运行，访问越狱文件系统 -->
+	<key>platform-application</key>
+	<true/>
+
+	<!-- 去掉沙盒，才能访问 /var/jb 等越狱路径 -->
+	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppDataContainers</key>
+	<true/>
+
+	<!-- 调试 / 附加权限（libjailbreak 初始化需要） -->
+	<key>get-task-allow</key>
+	<true/>
+	<key>task_for_pid-allow</key>
+	<true/>
+
+	<!-- libjailbreak 依赖的 IOKit 用户客户端（IOSurface 用于 kalloc/kmap/kcall） -->
+	<key>com.apple.security.exception.iokit-user-client-class</key>
+	<array>
+		<string>IOSurfaceRootUserClient</string>
+		<string>IOSurfaceAcceleratorClient</string>
+		<string>AppleJPEGDriverUserClient</string>
+		<string>IOReportUserClient</string>
+		<string>AGXDeviceUserClient</string>
+		<string>IOGPUDeviceUserClient</string>
+	</array>
+
+	<!-- 读取偏好设置等 -->
+	<key>user-preference-read</key>
+	<true/>
+	<key>file-read-data</key>
+	<true/>
+
+	<!-- 桌面图标刷新（装完 App 后 uicache 用，可选） -->
+	<key>com.apple.private.mobileinstall.allowedSPI</key>
+	<array/>
+</dict>
+</plist>
