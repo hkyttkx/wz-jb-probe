@@ -20,6 +20,7 @@
 #import "imgui.h"
 #import "imgui_impl_metal.h"
 #import "HUDWindow.h"
+#import "wzdraw.h"
 
 extern char **environ;
 extern "C" {
@@ -60,6 +61,8 @@ static const float kBtnW = 250.0f;
     BOOL _hasBallPos;
     BOOL _hasPanelPos;
     BOOL _drawing;   // 跨进程绘制是否运行中
+    BOOL _started;   // 是否已进入主菜单
+    BOOL _showDraw;  // 是否显示绘制叠加
 }
 
 - (void)viewDidLoad {
@@ -82,6 +85,8 @@ static const float kBtnW = 250.0f;
     _selRow = -1;
     _procCount = 0;
     _hasBallPos = NO;
+    _started = NO;
+    _showDraw = YES;
     _hasPanelPos = NO;
     {
         NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -422,7 +427,39 @@ static const float kBtnW = 250.0f;
 
 #pragma mark - 界面
 
+- (void)drawStartPage {
+    ImGuiIO &io = ImGui::GetIO();
+    const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(W, H), ImGuiCond_Always);
+    ImGui::Begin("##start", NULL,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                 ImGuiWindowFlags_NoSavedSettings);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    // 标题
+    const char *title = "WZ HUD";
+    ImVec2 ts = ImGui::CalcTextSize(title);
+    dl->AddText(ImVec2((W - ts.x) * 0.5f, H * 0.30f),
+                IM_COL32(120, 200, 255, 255), title);
+    const char *sub = "跨进程读取 · 绘制";
+    ImVec2 ss = ImGui::CalcTextSize(sub);
+    dl->AddText(ImVec2((W - ss.x) * 0.5f, H * 0.30f + 55.0f),
+                IM_COL32(130, 140, 155, 255), sub);
+    // 启动按钮
+    float bw = W * 0.55f, bh = 120.0f;
+    ImGui::SetCursorPos(ImVec2((W - bw) * 0.5f, H * 0.55f));
+    if (ImGui::Button("启  动", ImVec2(bw, bh))) {
+        _started = YES;
+        extern int gHUDHostMode;
+        if (gHUDHostMode) { _overlayMode = YES; _menuVisible = NO; [self applyGeometry]; }
+        else              { _overlayMode = NO;  _menuVisible = YES; [self applyGeometry]; }
+    }
+    ImGui::End();
+}
+
 - (void)drawUI {
+    if (!_started) { [self drawStartPage]; return; }
     ImGuiIO &io = ImGui::GetIO();
     const float W = io.DisplaySize.x, H = io.DisplaySize.y;
 
@@ -574,6 +611,36 @@ static const float kBtnW = 250.0f;
 
     ImGui::End();
     ImGui::PopStyleVar(2);
+
+    // ── 绘制叠加层（读取模块塞进来的方框/文字/血条）──
+    if (_showDraw && WZDrawCount() > 0) {
+        ImDrawList *dl = ImGui::GetForegroundDrawList();
+        int n = WZDrawCount();
+        for (int i = 0; i < n; i++) {
+            const WZDrawItem *it = WZDrawGet(i);
+            if (!it) continue;
+            ImU32 col = IM_COL32((int)(it->r * 255), (int)(it->g * 255),
+                                 (int)(it->b * 255), (int)(it->a * 255));
+            switch (it->kind) {
+            case WZ_ITEM_BOX:
+                dl->AddRect(ImVec2(it->x, it->y),
+                            ImVec2(it->x + it->w, it->y + it->h),
+                            col, 0.0f, 0, it->thickness);
+                break;
+            case WZ_ITEM_LINE:
+                dl->AddLine(ImVec2(it->x, it->y), ImVec2(it->x2, it->y2),
+                            col, it->thickness);
+                break;
+            case WZ_ITEM_CIRCLE:
+                dl->AddCircle(ImVec2(it->x + it->w * 0.5f, it->y + it->h * 0.5f),
+                              it->w * 0.5f, col, 0, it->thickness);
+                break;
+            case WZ_ITEM_TEXT:
+                dl->AddText(ImVec2(it->x, it->y), col, it->text);
+                break;
+            }
+        }
+    }
 }
 
 #pragma mark - 触摸 → ImGui
