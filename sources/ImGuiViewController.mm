@@ -369,10 +369,16 @@ static const float kBtnW = 250.0f;
         win.opaque = NO;
         self.mtkView.clearColor = MTLClearColorMake(0.0f, 0.0f, 0.0f, 0.0f);  // 完全透明
 
-        CGFloat shortSide = MIN(scr.size.width, scr.size.height);
+        // 用真实屏幕尺寸判断横竖屏（宿主进程 UIDevice.orientation 不可靠）
+        BOOL land = scr.size.width > scr.size.height;
+        _isLandscape = land;
+
         if (_menuVisible) {
-            CGFloat w = MIN(scr.size.width  - 24.0, 470.0 * _menuScale);
-            CGFloat h = MIN(scr.size.height - 24.0, 760.0 * _menuScale);
+            // 横屏：更宽更扁；竖屏：细长
+            CGFloat w = land ? MIN(scr.size.width  - 40.0, 980.0 * _menuScale)
+                             : MIN(scr.size.width  - 24.0, 470.0 * _menuScale);
+            CGFloat h = land ? MIN(scr.size.height - 40.0, 560.0 * _menuScale)
+                             : MIN(scr.size.height - 24.0, 760.0 * _menuScale);
             CGFloat x, y;
             if (_hasPanelPos) { x = _panelPos.x; y = _panelPos.y; }
             else { x = (scr.size.width - w) * 0.5; y = (scr.size.height - h) * 0.5; }
@@ -381,10 +387,12 @@ static const float kBtnW = 250.0f;
             _panelPos = CGPointMake(x, y); _hasPanelPos = YES;
             win.frame = CGRectMake(x, y, w, h);
         } else {
+            CGFloat shortSide = MIN(scr.size.width, scr.size.height);
             CGFloat d = MAX(shortSide * 0.17 * _menuScale, 44.0);
             CGFloat x, y;
             if (_hasBallPos) { x = _ballPos.x; y = _ballPos.y; }
-            else { x = scr.size.width - d - 14.0; y = 60.0; }
+            else if (land)   { x = scr.size.width - d - 24.0; y = scr.size.height * 0.5 - d * 0.5; }
+            else             { x = scr.size.width - d - 14.0; y = 60.0; }
             x = MAX(0, MIN(x, scr.size.width  - d));
             y = MAX(0, MIN(y, scr.size.height - d));
             _ballPos = CGPointMake(x, y); _hasBallPos = YES;
@@ -676,12 +684,12 @@ static const float kBtnW = 250.0f;
         float half = (pw - 40.0f) * 0.5f - 4.0f;
         ImGui::BeginDisabled(_selRow < 0 || self.busy);
         if (ImGui::Button("探测内存", ImVec2(half, kBtnH)) && _selRow >= 0)
-            [self runJob:@[ @"--wz", [NSString stringWithFormat:@"%d", _procs[_selRow].pid] ]];
+            [self runJob:@[ @"--wz", [NSString stringWithUTF8String:_procs[_selRow].name] ]];
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::BeginDisabled(_selRow < 0 || self.busy);
         if (ImGui::Button("读玩家并绘制", ImVec2(half, kBtnH)) && _selRow >= 0)
-            [self runJob:@[ @"--wz", [NSString stringWithFormat:@"%d", _procs[_selRow].pid] ]];
+            [self runJob:@[ @"--wz", [NSString stringWithUTF8String:_procs[_selRow].name] ]];
         ImGui::EndDisabled();
     }
     ImGui::Separator();

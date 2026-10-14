@@ -95,23 +95,51 @@ int  WZReadPlayers(WZPlayer *out, int maxCount);
 const char *WZReadStatus(void);
 }
 
-static int do_wz_read(pid_t target, const char *outpath) {
+static pid_t wz_resolve_pid(const char *arg) {
+    // 先试当 pid
+    int asPid = atoi(arg);
+    if (asPid > 1) {
+        char nm[256]={0};
+        if (proc_name(asPid, nm, sizeof(nm)) > 0 && nm[0]) return asPid;
+    }
+    // 再按名字查（列表可能已过期，按名最稳）
+    int n = proc_listallpids(NULL, 0);
+    if (n > 0) {
+        pid_t *pids = (pid_t*)malloc(sizeof(pid_t)*n);
+        if (pids) {
+            int got = proc_listallpids(pids, sizeof(pid_t)*n);
+            pid_t found = 0; int best = 0;
+            for (int i = 0; i < got; i++) {
+                char nm[256]={0};
+                if (proc_name(pids[i], nm, sizeof(nm)) <= 0 || !nm[0]) continue;
+                if (strcmp(nm, arg) == 0 && pids[i] > best) {   // 取同名中 pid 最大的（最新）
+                    best = pids[i]; found = pids[i];
+                }
+            }
+            free(pids);
+            if (found) return found;
+        }
+    }
+    return 0;
+}
+
+static int do_wz_read(const char *targetArg, const char *outpath) {
     char buf[16384];
     int off = 0;
-    off += snprintf(buf+off, sizeof(buf)-off, "uid=%d\n", (int)getuid());
+    off += snprintf(buf+off, sizeof(buf)-off, "uid=%d  target=%s\n", (int)getuid(), targetArg);
 
     do {
-    // 越狱：绑定跨进程读
     if (jb_load() != 0) {
         off += snprintf(buf+off, sizeof(buf)-off, "jb_load 失败: %s\n", jb_status());
         break;
     }
-    int r = WZReadInit(target);
+    pid_t pid = wz_resolve_pid(targetArg);
+    off += snprintf(buf+off, sizeof(buf)-off, "解析到 pid = %d\n", pid);
+    if (pid <= 1) { off += snprintf(buf+off, sizeof(buf)-off, "找不到目标进程\n"); break; }
+
+    int r = WZReadInit(pid);
     off += snprintf(buf+off, sizeof(buf)-off, "WZReadInit = %d\n", r);
-    if (r != 0) {
-        off += snprintf(buf+off, sizeof(buf)-off, "  %s\n", WZReadStatus());
-        break;
-    }
+    if (r != 0) { off += snprintf(buf+off, sizeof(buf)-off, "  %s\n", WZReadStatus()); break; }
     {
         char pb[8192]; WZReadProbe(pb, sizeof(pb));
         off += snprintf(buf+off, sizeof(buf)-off, "%s\n", pb);
@@ -125,12 +153,11 @@ static int do_wz_read(pid_t target, const char *outpath) {
         static WZPlayer pl[256];
         int n = WZReadPlayers(pl, 256);
         off += snprintf(buf+off, sizeof(buf)-off, "玩家数 = %d\n", n);
-        for (int i = 0; i < n && i < 30; i++) {
+        for (int i = 0; i < n && i < 30; i++)
             off += snprintf(buf+off, sizeof(buf)-off,
                 "  #%d obj=0x%llx pos=(%.1f,%.1f,%.1f) blood=%d head=%d online=%d\n",
                 i, pl[i].obj, pl[i].pos.x, pl[i].pos.y, pl[i].pos.z,
                 pl[i].blood, pl[i].headId, pl[i].online);
-        }
     }
     } while (0);
 
@@ -417,7 +444,7 @@ int main(int argc, char *argv[]) {
             return HUDHostRun();          // root 宿主：自建 UIApplication + 全局触摸
         }
         if (argc > 3 && strcmp(argv[1], "--wz") == 0) {
-            return do_wz_read((pid_t)atoi(argv[2]), argv[3]);
+            return do_wz_read(argv[2], argv[3]);
         }
         if (argc > 2 && strcmp(argv[1], "--draw") == 0) {
             return do_draw_test(argv[2]);
