@@ -80,7 +80,6 @@ static const float kBtnW = 250.0f;
     self.outputText = @"选一行进程 → 点「读取目标进程」。";
     _selRow = -1;
     _procCount = 0;
-    _dragging = NO;
     _hasBallPos = NO;
     _hasPanelPos = NO;
     {
