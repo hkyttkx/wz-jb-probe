@@ -122,7 +122,7 @@ int jb_load(void) {
         snprintf(g_status, sizeof(g_status), "%s", buf);
         g_ok = 1;
         {
-            extern int ds_compat_bind(void *h);
+            extern "C" int ds_compat_bind(void *h);
             int bindRc = ds_compat_bind(h);
             os_log(OS_LOG_DEFAULT, "[jb] ds_compat_bind=%d", bindRc);
         }
