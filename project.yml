@@ -37,6 +37,7 @@ targets:
       - sdk: Security.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
+      - sdk: AVFoundation.framework
     settings:
       base:
         INFOPLIST_FILE: Info.plist

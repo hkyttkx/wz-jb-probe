@@ -70,7 +70,10 @@ static bool ci_contains(const char *hay, const char *needle) {
     self.mtkView = [[MTKView alloc] initWithFrame:self.view.bounds device:device];
     self.mtkView.delegate = self;
     self.mtkView.preferredFramesPerSecond = 60;
-    self.mtkView.clearColor = MTLClearColorMake(0.05, 0.05, 0.07, 1.0);
+    // 透明背景：本窗口是覆盖层
+    self.mtkView.opaque = NO;
+    self.mtkView.backgroundColor = [UIColor clearColor];
+    self.mtkView.clearColor = MTLClearColorMake(0, 0, 0, 0);
     self.mtkView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.mtkView];
 
@@ -80,6 +83,7 @@ static bool ci_contains(const char *hay, const char *needle) {
     self.showProbe = NO;
     _selRow = -1;
     _procCount = 0;
+    _menuVisible = YES;
     strlcpy(_filter, "", sizeof(_filter));
 
     IMGUI_CHECKVERSION();
@@ -192,6 +196,23 @@ static bool ci_contains(const char *hay, const char *needle) {
 - (void)drawUI {
     ImGuiIO &io = ImGui::GetIO();
     const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+
+    // ── 收起态：只留一个小唤醒按钮 ──
+    if (!_menuVisible) {
+        ImGui::SetNextWindowPos(ImVec2(W - 260.0f, 150.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(220.0f, 110.0f), ImGuiCond_Always);
+        ImGui::Begin("##mini", NULL,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoSavedSettings);
+        if (ImGui::Button("显示菜单", ImVec2(190, 70))) {
+            _menuVisible = YES;
+            HUDSetPassthrough(NO);
+        }
+        ImGui::End();
+        return;
+    }
+
     const float padX = 45.0f, topY = 210.0f, statusH = 150.0f;
     const float botY = H - statusH - 60.0f;
 
@@ -199,10 +220,15 @@ static bool ci_contains(const char *hay, const char *needle) {
     ImGui::SetNextWindowSize(ImVec2(W - padX * 2.0f, botY - topY), ImGuiCond_Always);
     ImGui::Begin("WZ 控制台", NULL, ImGuiWindowFlags_NoCollapse);
 
-    // ── 状态 ──
+    // ── 状态 + 收起按钮 ──
     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "libjailbreak: 可用");
     ImGui::SameLine();
-    ImGui::TextDisabled("| uid=0 子进程读取 | 载入 %d 个进程", _procCount);
+    ImGui::TextDisabled("| 载入 %d 个进程", _procCount);
+    ImGui::SameLine(ImGui::GetWindowWidth() - 240.0f);
+    if (ImGui::Button("收起菜单", ImVec2(200, 0))) {
+        _menuVisible = NO;
+        HUDSetPassthrough(YES);      // 收起后让触摸穿透到游戏
+    }
     ImGui::Separator();
 
     // ── 进程选择 ──
@@ -210,8 +236,7 @@ static bool ci_contains(const char *hay, const char *needle) {
     ImGui::SameLine();
     ImGui::Checkbox("自动刷新进程列表", &_autoRefresh);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(260);
-    ImGui::InputTextWithHint("##filter", "过滤进程名…", _filter, sizeof(_filter));
+    ImGui::TextDisabled("(共 %d 个)", _procCount);
 
     ImGui::Spacing();
     ImGui::BeginChild("##proc", ImVec2(0, 330), true);
@@ -265,6 +290,34 @@ static bool ci_contains(const char *hay, const char *needle) {
     ImGui::TextDisabled("  Metal · Relaxin · iOS 17.1.2");
     ImGui::TextDisabled("DisplaySize: %.0f x %.0f", W, H);
     ImGui::End();
+}
+
+#pragma mark - 触摸输入 → ImGui
+// ImGui 用统一的鼠标模型，iOS 触摸要手动喂进去
+
+- (void)feedPos:(UITouch *)t {
+    if (!t) return;
+    CGPoint p = [t locationInView:self.mtkView];
+    CGFloat sc = UIScreen.mainScreen.scale;
+    ImGui::GetIO().AddMousePosEvent((float)(p.x * sc), (float)(p.y * sc));
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self feedPos:touches.anyObject];
+    ImGui::GetIO().AddMouseButtonEvent(0, true);
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self feedPos:touches.anyObject];
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self feedPos:touches.anyObject];
+    ImGui::GetIO().AddMouseButtonEvent(0, false);
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    ImGui::GetIO().AddMouseButtonEvent(0, false);
 }
 
 #pragma mark - MTKViewDelegate

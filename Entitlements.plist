@@ -22,6 +22,14 @@
 	<key>com.apple.private.persona-mgmt</key>
 	<true/>
 
+	<!-- ★覆盖窗口：注册到 SpringBoard，悬浮在所有 App 之上 -->
+	<key>com.apple.springboard.accessibility-window-hosting</key>
+	<true/>
+	<key>com.apple.springboard-ui.client</key>
+	<true/>
+	<key>com.apple.backboard.client</key>
+	<true/>
+
 	<!-- libjailbreak 依赖的 IOKit 用户客户端（IOSurface 用于 kalloc/kmap/kcall） -->
 	<key>com.apple.security.exception.iokit-user-client-class</key>
 	<array>
