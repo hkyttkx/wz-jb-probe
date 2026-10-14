@@ -52,9 +52,22 @@ static char      g_status[512] = {0};
 extern "C" const char *WZReadStatus(void) { return g_status; }
 
 // ── 读内存（走 libjailbreak 的 proc_vreadbuf）─────────
+extern "C" int mach_vm_read_overwrite(vm_map_t, uint64_t, uint64_t, uint64_t, uint64_t *);
+
 static int rd(uint64_t addr, void *buf, size_t len) {
-    if (!g_proc || !addr) return -1;
-    return jb_read_process(g_proc, addr, buf, len);
+    if (!addr) return -1;
+    // ① 优先 libjailbreak 的跨进程读
+    if (g_proc) {
+        if (jb_read_process(g_proc, addr, buf, len) == 0) return 0;
+    }
+    // ② 回退：用 task port 直读（task_for_pid 已成功）
+    if (g_task != MACH_PORT_NULL) {
+        uint64_t out = 0;
+        kern_return_t kr = mach_vm_read_overwrite(g_task, addr, len,
+                                                 (uint64_t)(uintptr_t)buf, &out);
+        if (kr == KERN_SUCCESS && out == len) return 0;
+    }
+    return -1;
 }
 static uint64_t rd64(uint64_t addr) { uint64_t v=0; rd(addr,&v,8); return v; }
 static uint32_t rd32(uint64_t addr) { uint32_t v=0; rd(addr,&v,4); return v; }
@@ -124,11 +137,15 @@ extern "C" void WZReadProbe(char *out, size_t n) {
 extern "C" int WZReadInit(pid_t pid) {
     g_pid = pid;
     g_proc = jb_proc_by_pid(pid);
-    if (!g_proc) { snprintf(g_status,sizeof(g_status),"proc_find(%d) 失败",pid); return -1; }
 
     kern_return_t kr = task_for_pid(mach_task_self(), pid, &g_task);
-    if (kr != KERN_SUCCESS)
-        os_log(OS_LOG_DEFAULT, "[wzread] task_for_pid=%d（不影响读取）", kr);
+    os_log(OS_LOG_DEFAULT, "[wzread] proc=0x%llx task_for_pid=%d", g_proc, kr);
+
+    if (!g_proc && kr != KERN_SUCCESS) {
+        snprintf(g_status,sizeof(g_status),"proc_find 与 task_for_pid 都失败 (pid=%d)",pid);
+        return -1;
+    }
+    snprintf(g_status,sizeof(g_status),"ok proc=0x%llx task=%d", g_proc, g_task);
 
     scanRegions();
     if (!g_ga_base) { snprintf(g_status,sizeof(g_status),"未找到 GameAssembly 区域"); return -2; }

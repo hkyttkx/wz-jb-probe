@@ -65,6 +65,9 @@ static const float kBtnW = 250.0f;
     BOOL _showDraw;  // 是否显示绘制叠加
     int  _wzDrawPid; // 要读的游戏 pid
     BOOL _hudRunning;// 主 App：HUD 是否在运行
+    char _gameName[64];   // 游戏进程名（默认 sc）
+    int  _gamePid;        // 连接到的 pid
+    BOOL _gameConnected;
 }
 
 - (void)viewDidLoad {
@@ -536,6 +539,24 @@ static const float kBtnW = 250.0f;
 }
 
 // 主 App：启动 HUD（拉起 root 宿主）
+// 连接游戏：先确认进程存在，再走 --wz
+- (void)connectGameAndProbe {
+    // 本地先确认（列表里有没有这个名字）
+    int foundPid = 0;
+    for (int i = 0; i < _procCount; i++)
+        if (strcmp(_procs[i].name, _gameName) == 0 && _procs[i].pid > foundPid)
+            foundPid = _procs[i].pid;
+    if (!foundPid) {
+        _gameConnected = NO;
+        self.outputText = [NSString stringWithFormat:
+            @"未找到游戏进程 \"%s\"\n\n请先打开游戏，再点「连接游戏并探测」。", _gameName];
+        return;
+    }
+    _gamePid = foundPid;
+    _gameConnected = YES;
+    [self runJob:@[ @"--wz", [NSString stringWithUTF8String:_gameName] ]];
+}
+
 - (void)startHudFromMain {
     [self startHUDHost];
     _hudRunning = YES;
@@ -544,6 +565,9 @@ static const float kBtnW = 250.0f;
 - (void)stopHudFromMain {
     [self stopHUDHost];
     _hudRunning = NO;
+    strlcpy(_gameName, "sc", sizeof(_gameName));
+    _gamePid = 0;
+    _gameConnected = NO;
 }
 
 // 双击悬浮球 = 直接展开功能菜单（不经过中间态）
@@ -678,20 +702,33 @@ static const float kBtnW = 250.0f;
     if (self.busy) ImGui::TextColored(ImVec4(1.0f,0.8f,0.3f,1.0f), "  执行中…");
     ImGui::Separator();
 
-    // 王牌战争
-    ImGui::TextColored(ImVec4(0.6f,1.0f,0.6f,1.0f), "王牌战争 · 读取绘制");
+    // ── 游戏连接（固定按进程名，避免选错）──
+    ImGui::TextColored(ImVec4(0.6f,1.0f,0.6f,1.0f), "游戏连接");
+    ImGui::Text("目标进程名：");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1.0f,0.85f,0.4f,1.0f), "%s", _gameName);
+    ImGui::SameLine();
+    ImGui::Text("  状态：");
+    ImGui::SameLine();
+    if (_gameConnected)
+        ImGui::TextColored(ImVec4(0.4f,1.0f,0.5f,1.0f), "已连接 pid=%d", _gamePid);
+    else
+        ImGui::TextColored(ImVec4(0.9f,0.5f,0.4f,1.0f), "未连接");
+
     {
         float half = (pw - 40.0f) * 0.5f - 4.0f;
-        ImGui::BeginDisabled(_selRow < 0 || self.busy);
-        if (ImGui::Button("探测内存", ImVec2(half, kBtnH)) && _selRow >= 0)
-            [self runJob:@[ @"--wz", [NSString stringWithUTF8String:_procs[_selRow].name] ]];
-        ImGui::EndDisabled();
+        if (ImGui::Button("① 连接游戏并探测", ImVec2(half, kBtnH))) {
+            [self connectGameAndProbe];
+        }
         ImGui::SameLine();
-        ImGui::BeginDisabled(_selRow < 0 || self.busy);
-        if (ImGui::Button("读玩家并绘制", ImVec2(half, kBtnH)) && _selRow >= 0)
-            [self runJob:@[ @"--wz", [NSString stringWithUTF8String:_procs[_selRow].name] ]];
+        ImGui::BeginDisabled(!_gameConnected || self.busy);
+        if (ImGui::Button("② 读玩家并绘制", ImVec2(half, kBtnH))) {
+            [self runJob:@[ @"--wz", [NSString stringWithUTF8String:_gameName] ]];
+        }
         ImGui::EndDisabled();
     }
+    ImGui::Separator();
+
     ImGui::Separator();
 
     ImGui::TextDisabled("输出");
