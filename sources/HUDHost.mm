@@ -54,8 +54,14 @@ static void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef servic
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *keyWindow = [[app windows] firstObject];
         if (!keyWindow) return;
-        UIWindow *searchWin = keyWindow;
-        UIView *keyView = [searchWin hitTest:[rep location] withEvent:nil];
+
+        // ★ 关键：rep.location 是全局屏幕坐标，
+        //   而我们的 HUD 窗口很小（只覆盖悬浮球），必须先转成窗口内坐标，
+        //   否则 hitTest 一定落在窗口外返回 nil。
+        CGPoint global  = [rep location];
+        CGPoint inWin   = [keyWindow convertPoint:global fromWindow:nil];
+
+        UIView *keyView = [keyWindow hitTest:inWin withEvent:nil];
 
         UITouchPhase phase = UITouchPhaseEnded;
         if ([rep isTouchDown])      phase = UITouchPhaseBegan;
@@ -67,9 +73,9 @@ static void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef servic
         NSInteger pointerId = [[[[rep handInfo] paths] firstObject] pathIdentity];
         if (pointerId > 0) {
             [TSEventFetcher receiveAXEventID:MIN(MAX(pointerId, 1), 98)
-                          atGlobalCoordinate:[rep location]
+                          atGlobalCoordinate:inWin          // 传窗口内坐标
                               withTouchPhase:phase
-                                    inWindow:searchWin
+                                    inWindow:keyWindow
                                       onView:keyView];
         }
     });
