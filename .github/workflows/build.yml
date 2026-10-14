@@ -30,16 +30,23 @@ jobs:
             -target WZJBProbe \
             -sdk iphoneos \
             -configuration Release \
-            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            CONFIGURATION_BUILD_DIR="$PWD/out" \
             build
+          echo "--- 产物 ---"
+          ls -la out/ || true
 
       - name: Locate app bundle
         run: |
-          find build -name "*.app" -maxdepth 6 -type d
-          echo "APP_PATH=$(find build -name 'WZJBProbe.app' -maxdepth 6 -type d | head -1)" >> $GITHUB_ENV
+          APP="$PWD/out/WZJBProbe.app"
+          if [ ! -d "$APP" ]; then
+            echo "未找到 WZJBProbe.app，搜索整个 out/"
+            find out -name "*.app" -type d
+            exit 1
+          fi
+          echo "APP_PATH=$APP" >> $GITHUB_ENV
 
       - name: Bundle dylibs + pseudo-sign with ldid
         run: |
