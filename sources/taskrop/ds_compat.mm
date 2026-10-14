@@ -32,7 +32,6 @@ int      kwrite16(uint64_t va, uint16_t v);
 int      kwrite8(uint64_t va, uint8_t v);
 uint64_t kread_ptr(uint64_t va);
 uint64_t kread_smrptr(uint64_t va);
-void     kwrite_zone_element(uint64_t dst, const void *src, uint64_t len);
 int      kalloc(uint64_t *addr, uint64_t size);
 int      kfree(uint64_t addr, uint64_t size);
 }
@@ -87,7 +86,8 @@ void ds_kwrite(uint64_t a, void *b, uint64_t n) { kwritebuf(a, b, n); }
 void ds_kwritebuf(uint64_t a, const void *b, uint64_t n) { kwritebuf(a, b, n); }
 
 void ds_kwritezoneelement(uint64_t d, const void *s, uint64_t n) {
-    kwrite_zone_element(d, s, n);
+    // libjailbreak 未导出 zone 专用写，用普通内核写兜底
+    kwritebuf(d, s, n);
 }
 
 void ds_khexdump(uint64_t addr, size_t size) {
