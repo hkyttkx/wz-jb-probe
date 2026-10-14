@@ -90,11 +90,20 @@ extern "C" int SBDrawInit(void) {
         os_log_error(OS_LOG_DEFAULT, "[sbdraw] jb_load 失败: %{public}s", jb_status());
         return -1;
     }
-    ds_sync_kernel_info();
+    // ★ 顺序很重要：先拿 kernel r/w，再同步内核信息，最后初始化偏移表
     int r = jb_init_primitives();
     if (r != 0) {
         os_log_error(OS_LOG_DEFAULT, "[sbdraw] primitives 失败 %d", r);
         return -2;
+    }
+    ds_sync_kernel_info();
+    // ★ 关键：初始化 DS 的偏移表（571 条）。不调的话 off_* 全 0，进程链表遍历必挂
+    {
+        extern "C" void offsets_init(void);
+        extern "C" void init_offsets(void);
+        offsets_init();
+        init_offsets();
+        os_log(OS_LOG_DEFAULT, "[sbdraw] offsets initialized");
     }
 
     uint64_t sbProc = proc_find_by_name("SpringBoard");
