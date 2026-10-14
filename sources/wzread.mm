@@ -44,7 +44,9 @@ extern "C" int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int
 static pid_t     g_pid   = 0;
 static uint64_t  g_proc  = 0;
 static task_t    g_task  = MACH_PORT_NULL;
-static uint64_t  g_ga_base = 0;      // GameAssembly 基址
+static uint64_t  g_ga_base = 0;      // IL2CPP 模块基址
+static uint64_t  g_main_base = 0;    // 主二进制基址
+static uint64_t  g_main_size = 0;
 static uint64_t  g_ga_size = 0;
 static uint64_t  g_battleIns = 0;    // 找到的 Battle 实例
 static char      g_status[512] = {0};
@@ -101,11 +103,17 @@ static void scanRegions(void) {
         int sz = proc_pidinfo(g_pid, PROC_PIDREGIONPATHINFO, addr, &ri, sizeof(ri));
         if (sz <= 0) break;
         if (ri.size == 0) break;
-        if (strstr(ri.path, "GameAssembly")) {
+        // Unity IL2CPP 的代码段命名不统一：GameAssembly / UnityFramework / 主二进制
+        if (!g_ga_base && (strstr(ri.path, "GameAssembly") ||
+                           strstr(ri.path, "UnityFramework"))) {
             g_ga_base = ri.address;
             g_ga_size = ri.size;
-            os_log(OS_LOG_DEFAULT, "[wzread] GameAssembly @ 0x%llx size 0x%llx",
-                   g_ga_base, g_ga_size);
+            os_log(OS_LOG_DEFAULT, "[wzread] IL2CPP 模块 %s @ 0x%llx size 0x%llx",
+                   ri.path, g_ga_base, g_ga_size);
+        }
+        // 兜底：记录 .app 主二进制
+        if (!g_main_base && strstr(ri.path, ".app/") && !strstr(ri.path, "Frameworks")) {
+            g_main_base = ri.address; g_main_size = ri.size;
         }
         g_regs[g_regCount].addr = ri.address;
         g_regs[g_regCount].size = ri.size;
@@ -120,7 +128,8 @@ static void scanRegions(void) {
 extern "C" void WZReadProbe(char *out, size_t n) {
     int o = 0;
     o += snprintf(out+o, n-o, "pid=%d proc=0x%llx\n", g_pid, g_proc);
-    o += snprintf(out+o, n-o, "GameAssembly: base=0x%llx size=0x%llx\n", g_ga_base, g_ga_size);
+    o += snprintf(out+o, n-o, "IL2CPP模块: base=0x%llx size=0x%llx\n", g_ga_base, g_ga_size);
+    o += snprintf(out+o, n-o, "主二进制:  base=0x%llx size=0x%llx\n", g_main_base, g_main_size);
     o += snprintf(out+o, n-o, "regions(%d):\n", g_regCount);
     for (int i = 0; i < g_regCount && o < (int)n - 80; i++) {
         char p[256]={0};
@@ -148,7 +157,11 @@ extern "C" int WZReadInit(pid_t pid) {
     snprintf(g_status,sizeof(g_status),"ok proc=0x%llx task=%d", g_proc, g_task);
 
     scanRegions();
-    if (!g_ga_base) { snprintf(g_status,sizeof(g_status),"未找到 GameAssembly 区域"); return -2; }
+    if (!g_ga_base) {
+        snprintf(g_status,sizeof(g_status),"未找到 IL2CPP 模块（regions=%d main=0x%llx）",
+                 g_regCount, g_main_base);
+        return 2;      // 非致命：probe 仍会输出区域列表
+    }
     return 0;
 }
 
@@ -176,9 +189,12 @@ static int checkBattleObj(uint64_t o) {
 
 extern "C" uint64_t WZFindBattleIns(void) {
     if (g_battleIns && checkBattleObj(g_battleIns)) return g_battleIns;
-    if (!g_ga_base) return 0;
-
-    os_log(OS_LOG_DEFAULT, "[wzread] 开始扫描 GameAssembly 找 Battle.Ins");
+    if (!g_ga_base) {
+        // 兜底：用主二进制作为扫描范围
+        if (g_main_base) { g_ga_base = g_main_base; g_ga_size = g_main_size; }
+        else return 0;
+    }
+    os_log(OS_LOG_DEFAULT, "[wzread] 扫描 0x%llx+0x%llx 找 Battle.Ins", g_ga_base, g_ga_size);
     // 扫整个 GameAssembly 映射（含 __DATA）
     uint64_t step = 8;
     uint64_t end  = g_ga_base + g_ga_size;

@@ -143,8 +143,9 @@ static int do_wz_read(const char *targetArg, const char *outpath) {
     if (pid <= 1) { off += snprintf(buf+off, sizeof(buf)-off, "找不到目标进程\n"); break; }
 
     int r = WZReadInit(pid);
-    off += snprintf(buf+off, sizeof(buf)-off, "WZReadInit = %d\n", r);
-    if (r != 0) { off += snprintf(buf+off, sizeof(buf)-off, "  %s\n", WZReadStatus()); break; }
+    off += snprintf(buf+off, sizeof(buf)-off, "WZReadInit = %d  (%s)\n", r, WZReadStatus());
+    if (r == -1) break;      // -1 = 完全无法读取；其它情况继续 */
+    if (r != 0) off += snprintf(buf+off, sizeof(buf)-off, "  (非致命，继续探测)\n");
     {
         char pb[8192]; WZReadProbe(pb, sizeof(pb));
         off += snprintf(buf+off, sizeof(buf)-off, "%s\n", pb);
