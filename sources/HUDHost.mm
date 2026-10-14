@@ -78,7 +78,7 @@ static void HUDHIDCallback(void *target, void *refcon, IOHIDService service, IOH
 @end
 
 // 由 main.mm 在 --hud 模式下调用；此函数不返回
-int HUDHostRun(void) {
+extern "C" int HUDHostRun(void) {
     @autoreleasepool {
         [UIScreen initialize];
         CFRunLoopGetCurrent();
