@@ -5,8 +5,8 @@
 #import <objc/message.h>
 #import <os/log.h>
 
-static BOOL gHUDPassthrough = NO;      // 触摸穿透
-static BOOL gHUDOverlay     = NO;      // 是否处于覆盖模式
+static BOOL gHUDPassthrough = NO;
+static BOOL gHUDOverlay     = NO;
 
 void HUDSetPassthrough(BOOL v) { gHUDPassthrough = v; }
 BOOL HUDGetPassthrough(void)   { return gHUDPassthrough; }
@@ -14,10 +14,8 @@ BOOL HUDGetPassthrough(void)   { return gHUDPassthrough; }
 @implementation HUDWindow
 
 - (BOOL)_isSystemWindow { return YES; }
-// 覆盖模式：不归 WindowServer 常规托管，才能悬浮别的 App 之上；普通模式用默认行为(YES)
 - (BOOL)_isWindowServerHostingManaged { return gHUDOverlay ? NO : YES; }
 - (BOOL)_ignoresHitTest { return gHUDPassthrough; }
-// 覆盖模式：安全窗口（不被录屏捕获）；普通模式用默认(NO)
 - (BOOL)_isSecure { return gHUDOverlay ? YES : NO; }
 
 @end
@@ -25,20 +23,16 @@ BOOL HUDGetPassthrough(void)   { return gHUDPassthrough; }
 BOOL HUDRegisterWindow(HUDWindow *win) {
     if (!win) return NO;
     Class cls = objc_getClass("SBSAccessibilityWindowHostingController");
-    if (!cls) { os_log(OS_LOG_DEFAULT, "[HUD] 无 SBSAccessibilityWindowHostingController"); return NO; }
+    if (!cls) { os_log(OS_LOG_DEFAULT, "[HUD] 无 hosting controller"); return NO; }
     id ctrl = ((id (*)(id, SEL))objc_msgSend)([cls alloc], sel_registerName("init"));
     SEL sel = NSSelectorFromString(@"registerWindowWithContextID:atLevel:");
-    if (!ctrl || ![ctrl respondsToSelector:sel]) {
-        os_log(OS_LOG_DEFAULT, "[HUD] 注册选择器不可用");
-        return NO;
-    }
+    if (!ctrl || ![ctrl respondsToSelector:sel]) return NO;
     unsigned int ctx = 0;
     SEL ctxSel = NSSelectorFromString(@"_contextId");
-    if ([win respondsToSelector:ctxSel]) {
+    if ([win respondsToSelector:ctxSel])
         ctx = ((unsigned int (*)(id, SEL))objc_msgSend)(win, ctxSel);
-    }
     ((void (*)(id, SEL, unsigned int, double))objc_msgSend)(ctrl, sel, ctx, win.windowLevel);
-    os_log(OS_LOG_DEFAULT, "[HUD] 已注册 ctx=%u level=%.0f", ctx, win.windowLevel);
+    os_log(OS_LOG_DEFAULT, "[HUD] 注册 ctx=%u level=%.0f", ctx, win.windowLevel);
     return YES;
 }
 
@@ -46,10 +40,10 @@ void HUDSetOverlayMode(HUDWindow *win, BOOL overlay) {
     if (!win) return;
     gHUDOverlay = overlay;
     if (overlay) {
-        win.windowLevel = 10000010.0;   // 高于游戏窗口
+        win.windowLevel = 10000010.0;
         HUDRegisterWindow(win);
     } else {
-        win.windowLevel = UIWindowLevelNormal;  // 回到普通 App 层级
+        win.windowLevel = UIWindowLevelNormal;
         HUDSetPassthrough(NO);
     }
     os_log(OS_LOG_DEFAULT, "[HUD] overlay=%d level=%.0f", overlay, win.windowLevel);

@@ -12,6 +12,7 @@
 #import <limits.h>
 #import <stdlib.h>
 #import <ctype.h>
+#import <os/log.h>
 
 #import "imgui.h"
 #import "imgui_impl_metal.h"
@@ -102,6 +103,11 @@ typedef struct { int pid; char name[128]; } ProcEntry;
     dispatch_resume(_timer);
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self applyGeometry];      // 此时窗口已就绪
+}
+
 - (HUDWindow *)hudWin {
     UIWindow *w = self.view.window;
     return [w isKindOfClass:[HUDWindow class]] ? (HUDWindow *)w : nil;
@@ -172,6 +178,38 @@ typedef struct { int pid; char name[128]; } ProcEntry;
     if (win) HUDSetOverlayMode(win, on);
     _overlayMode = on;
     _menuVisible = !on;               // 进入悬浮先收起
+    [self applyGeometry];
+}
+
+// 关键：悬浮模式下窗口只占菜单那块，避免"糊一层黑纸"
+- (void)applyGeometry {
+    HUDWindow *win = [self hudWin];
+    if (!win) return;
+    CGRect scr = UIScreen.mainScreen.bounds;
+
+    [UIView setAnimationsEnabled:NO];   // 免得动画期间 ImGui 尺寸抖动
+    if (!_overlayMode) {
+        win.frame = scr;                // 普通模式：全屏正常 App
+        win.backgroundColor = [UIColor blackColor];
+        win.opaque = YES;
+        self.mtkView.clearColor = MTLClearColorMake(0.04, 0.04, 0.055, 1.0);
+    } else {
+        win.backgroundColor = [UIColor clearColor];
+        win.opaque = NO;
+        self.mtkView.clearColor = MTLClearColorMake(0.04, 0.04, 0.055, 0.94);
+        if (_menuVisible) {
+            CGFloat w = MIN(scr.size.width - 40.0, 520.0);
+            CGFloat h = MIN(scr.size.height * 0.66, 900.0);
+            win.frame = CGRectMake((scr.size.width - w) * 0.5,
+                                   (scr.size.height - h) * 0.5, w, h);
+        } else {
+            CGFloat s = 104.0;          // 收起：右上角小方块
+            win.frame = CGRectMake(scr.size.width - s - 16.0, 92.0, s, s);
+        }
+    }
+    [UIView setAnimationsEnabled:YES];
+    os_log(OS_LOG_DEFAULT, "[WZ] geometry overlay=%d menu=%d frame=%.0fx%.0f",
+           _overlayMode, _menuVisible, win.frame.size.width, win.frame.size.height);
 }
 
 - (void)drawUI {
@@ -195,12 +233,12 @@ typedef struct { int pid; char name[128]; } ProcEntry;
         return;
     }
 
-    // ── 主面板（自适应大小、居中）──
-    const float pw = (W < 900.0f) ? (W - 80.0f) : 900.0f;
-    const float ph = (H < 1400.0f) ? (H - 200.0f) : 1180.0f;
-    ImGui::SetNextWindowPos(ImVec2((W - pw) * 0.5f, (H - ph) * 0.5f), ImGuiCond_Always);
+    // ── 主面板（填满当前窗口，窗口尺寸由 applyGeometry 控制）──
+    const float pw = W;
+    const float ph = H - 70.0f;      // 底部留状态条
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
-    ImGui::Begin("WZ 控制台", NULL, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin("WZ 控制台", NULL, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
 
     // 状态 + 模式切换
     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "libjailbreak 可用");
