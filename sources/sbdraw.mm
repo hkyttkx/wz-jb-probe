@@ -17,6 +17,9 @@ const char *jb_status(void);
 void offsets_init(void);
 void init_offsets(void);
 int  ds_run(void);
+uint64_t jb_kernel_virtbase(void);
+extern uint64_t kernel_base;
+extern uint64_t kernel_slide;
 }
 
 // ── 复用的远程对象句柄 ────────────────────────────────
@@ -102,6 +105,13 @@ extern "C" int SBDrawInit(void) {
         int dr = ds_run();
         os_log(OS_LOG_DEFAULT, "[sbdraw] ds_run = %d", dr);
         if (dr != 0) return -2;
+        // 用 libjailbreak 的 virtBase 修正 DS 算错的 kernel_base
+        uint64_t vb = jb_kernel_virtbase();
+        if (vb) {
+            kernel_base  = vb;
+            kernel_slide = vb - 0xfffffff007004000ULL;
+            os_log(OS_LOG_DEFAULT, "[sbdraw] kbase 修正为 0x%llx", kernel_base);
+        }
     }
 
     // ③ 定位 SpringBoard

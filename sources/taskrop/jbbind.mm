@@ -22,6 +22,7 @@ typedef int      (*fn_vread)(uint64_t, const void*, void*, size_t);
 typedef int      (*fn_vwrite)(uint64_t, const void*, const void*, size_t);
 
 static void      *g_jb_handle = NULL;
+static void      *g_sysinfo   = NULL;
 static fn_u64_v   p_proc_self = NULL;
 static fn_u64_i   p_proc_find = NULL;
 static fn_u64_u64 p_proc_task = NULL;
@@ -31,6 +32,7 @@ static fn_vwrite  p_proc_vwrite = NULL;
 extern "C" int ds_compat_bind(void *h) {
     if (!h) return -1;
     g_jb_handle   = h;
+    g_sysinfo     = dlsym(h, "gSystemInfo");
     p_proc_self   = (fn_u64_v)   dlsym(h, "proc_self");
     p_proc_find   = (fn_u64_i)   dlsym(h, "proc_find");
     p_proc_task   = (fn_u64_u64) dlsym(h, "proc_task");
@@ -44,6 +46,20 @@ extern "C" int ds_compat_bind(void *h) {
 // 兼容层：原来的 ds_sync_kernel_info 现在由 darksword.m 的 ds_run 负责填充，
 // 保留空实现以免调用点报错。
 extern "C" void ds_sync_kernel_info(void) { }
+
+// 从 libjailbreak 的 gSystemInfo 取内核虚拟基址（标准 16 位形态）
+// kernelConstant: slide=0x00 staticBase=0x08 base=0x10 virtBase=0x18
+extern "C" uint64_t jb_kernel_virtbase(void) {
+    if (!g_sysinfo) return 0;
+    uint8_t *p = (uint8_t *)g_sysinfo;
+    uint64_t v[4];
+    for (int i = 0; i < 4; i++) v[i] = *(uint64_t *)(p + i * 8);
+    // 选一个符合内核规范地址形态（0xfffffff...）的
+    for (int i = 3; i >= 0; i--) {
+        if (v[i] >= 0xfffffff000000000ULL && v[i] < 0xffffffff00000000ULL) return v[i];
+    }
+    return 0;
+}
 
 // ── 真正的"跨进程读目标进程内存"（上面已证明可用）────────
 extern "C" uint64_t jb_proc_by_pid(pid_t pid) {

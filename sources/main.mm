@@ -32,6 +32,7 @@ extern uint64_t kernel_base;
 extern uint64_t kernel_slide;
 void     init_offsets(void);
 int      ds_run(void);
+uint64_t jb_kernel_virtbase(void);
 }
 #ifndef PROC_PIDPATHINFO_MAXSIZE
 #define PROC_PIDPATHINFO_MAXSIZE 4096
@@ -112,8 +113,18 @@ static int do_springboard_test(const char *outpath) {
                     "ds_run() = %d  %s\n", dr, dr == 0 ? "OK（DS 内核 r/w 就绪）" : "FAIL");
     if (dr != 0) break;
 
-    off += snprintf(buf + off, sizeof(buf) - off,
-                    "kernel_base = 0x%llx  slide = 0x%llx\n", kernel_base, kernel_slide);
+    // DS 算出的 kernel_base 位宽不对（ds_isvalid 会拒绝），用 libjailbreak 的 virtBase 修正
+    {
+        uint64_t vb = jb_kernel_virtbase();
+        off += snprintf(buf + off, sizeof(buf) - off,
+                        "DS kbase=0x%llx  virtBase=0x%llx\n", kernel_base, vb);
+        if (vb) {
+            kernel_base  = vb;
+            kernel_slide = vb - 0xfffffff007004000ULL;
+            off += snprintf(buf + off, sizeof(buf) - off,
+                            "修正后 kbase=0x%llx slide=0x%llx\n", kernel_base, kernel_slide);
+        }
+    }
     {
         uint64_t t = kernel_base ? ds_kread64(kernel_base + 0x100) : 0;
         off += snprintf(buf + off, sizeof(buf) - off, "ds_kread64(kbase+0x100) = 0x%llx\n", t);
