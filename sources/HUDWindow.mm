@@ -14,12 +14,11 @@ BOOL HUDGetPassthrough(void)   { return gHUDPassthrough; }
 @implementation HUDWindow
 
 - (BOOL)_isSystemWindow { return YES; }
-- (BOOL)_isWindowServerHostingManaged { return gHUDOverlay ? NO : [super _isWindowServerHostingManaged]; }
+// 覆盖模式：不归 WindowServer 常规托管，才能悬浮别的 App 之上；普通模式用默认行为(YES)
+- (BOOL)_isWindowServerHostingManaged { return gHUDOverlay ? NO : YES; }
 - (BOOL)_ignoresHitTest { return gHUDPassthrough; }
-- (BOOL)_isSecure {
-    // 覆盖模式下用安全窗口（不被录屏抓到）；普通模式恢复常规
-    return gHUDOverlay ? YES : [super _isSecure];
-}
+// 覆盖模式：安全窗口（不被录屏捕获）；普通模式用默认(NO)
+- (BOOL)_isSecure { return gHUDOverlay ? YES : NO; }
 
 @end
 
