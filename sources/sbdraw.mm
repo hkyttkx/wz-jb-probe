@@ -14,6 +14,8 @@ void ds_sync_kernel_info(void);
 int  jb_load(void);
 int  jb_init_primitives(void);
 const char *jb_status(void);
+void offsets_init(void);
+void init_offsets(void);
 }
 
 // ── 复用的远程对象句柄 ────────────────────────────────
@@ -99,8 +101,6 @@ extern "C" int SBDrawInit(void) {
     ds_sync_kernel_info();
     // ★ 关键：初始化 DS 的偏移表（571 条）。不调的话 off_* 全 0，进程链表遍历必挂
     {
-        extern "C" void offsets_init(void);
-        extern "C" void init_offsets(void);
         offsets_init();
         init_offsets();
         os_log(OS_LOG_DEFAULT, "[sbdraw] offsets initialized");
