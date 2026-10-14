@@ -9,6 +9,7 @@
 #import <stdlib.h>
 #import <unistd.h>
 #import <limits.h>
+#import <os/log.h>
 
 static void *g_handle = NULL;
 static char  g_jbroot[PATH_MAX] = {0};
@@ -120,6 +121,11 @@ int jb_load(void) {
                  p_kread    ? "有" : "无");
         snprintf(g_status, sizeof(g_status), "%s", buf);
         g_ok = 1;
+        {
+            extern int ds_compat_bind(void *h);
+            int bindRc = ds_compat_bind(h);
+            os_log(OS_LOG_DEFAULT, "[jb] ds_compat_bind=%d", bindRc);
+        }
         return 0;
     }
 
