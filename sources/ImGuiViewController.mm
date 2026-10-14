@@ -100,7 +100,7 @@ static bool ci_contains(const char *hay, const char *needle) {
         b.BuildRanges(&ranges);
         NSString *fp = [[NSBundle mainBundle] pathForResource:@"font" ofType:@"ttf"];
         if (fp) io.Fonts->AddFontFromFileTTF(fp.UTF8String, 30.0f, &cfg, ranges.Data);
-        else    io.Fonts->AddDefaultFont();
+        else    io.Fonts->AddFontDefault();
         io.Fonts->Build();
     }
     ImGui_ImplMetal_Init(device);
@@ -208,7 +208,7 @@ static bool ci_contains(const char *hay, const char *needle) {
     // ── 进程选择 ──
     if (ImGui::Button("刷新列表", ImVec2(150, 0))) [self refreshProcs];
     ImGui::SameLine();
-    ImGui::Checkbox("自动刷新", &self.autoRefresh);
+    ImGui::Checkbox("自动刷新进程列表", &_autoRefresh);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(260);
     ImGui::InputTextWithHint("##filter", "过滤进程名…", _filter, sizeof(_filter));
@@ -293,6 +293,12 @@ static bool ci_contains(const char *hay, const char *needle) {
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
     [enc endEncoding];
+    [cb presentDrawable:view.currentDrawable];
+    [cb commit];
+}
+
+@end
+ing];
     [cb presentDrawable:view.currentDrawable];
     [cb commit];
 }
