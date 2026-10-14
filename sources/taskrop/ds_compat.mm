@@ -11,10 +11,10 @@
 #import <mach/mach.h>
 #import <os/log.h>
 #import <sys/sysctl.h>
+#import <dlfcn.h>
 
 // ── libjailbreak（Relaxin/Dopamine）导出 ──────────────
 extern "C" {
-#import <dlfcn.h>
 
 // 运行时从 jbroot 的 libjailbreak 取符号（不静态链接，避免启动即加载而崩）
 typedef int      (*fn_int_v)(void);
