@@ -24,11 +24,6 @@ int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
 int HUDHostRun(void);      // root HUD 宿主（HUDHost.mm）
 void ds_sync_kernel_info(void);                 // ds_compat.mm
 uint64_t proc_find_by_name(const char *name);   // taskrop/utils.m
-// RemoteCall 的 C 接口（TaskRop/RemoteCall.m 里是 C 定义）
-uint64_t remote_sel(RemoteCall *proc, const char *name);
-uint64_t remote_getClass(RemoteCall *proc, const char *name);
-uint64_t remote_msg(RemoteCall *proc, uint64_t obj, uint64_t sel,
-                    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);
 }
 #ifndef PROC_PIDPATHINFO_MAXSIZE
 #define PROC_PIDPATHINFO_MAXSIZE 4096
