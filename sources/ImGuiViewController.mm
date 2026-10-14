@@ -486,7 +486,7 @@ static const float kBtnW = 250.0f;
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f,0.52f,0.98f,1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f,0.34f,0.72f,1.0f));
     }
-    if (ImGui::Button(running ? "  关闭 HUD  " : "  启动 HUD  ", ImVec2(bw, bh))) {
+    if (ImGui::Button("##hudbtn", ImVec2(bw, bh))) {
         if (running) [self stopHudFromMain];
         else         [self startHudFromMain];
     }
@@ -538,6 +538,13 @@ static const float kBtnW = 250.0f;
     _hudRunning = NO;
 }
 
+// 双击悬浮球 = 直接展开功能菜单（不经过中间态）
+- (void)toggleMenuDirect {
+    _menuVisible = !_menuVisible;
+    HUDSetPassthrough(!_menuVisible);
+    [self applyGeometry];
+}
+
 - (void)drawUI {
     extern int gHUDHostMode;
 
@@ -576,7 +583,11 @@ static const float kBtnW = 250.0f;
         const char *txt = "菜单";
         ImVec2 ts = ImGui::CalcTextSize(txt);
         dl->AddText(ImVec2(c.x - ts.x*0.5f, c.y - ts.y*0.5f), IM_COL32_WHITE, txt);
-        if (clicked) { _menuVisible = YES; HUDSetPassthrough(NO); }
+        if (clicked) {
+            _menuVisible = YES;
+            HUDSetPassthrough(NO);
+            [self applyGeometry];      // ★ 窗口放大成菜单
+        }
         ImGui::End();
         ImGui::PopStyleVar();
         return;
@@ -624,6 +635,7 @@ static const float kBtnW = 250.0f;
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - bw);
         if (ImGui::Button("收起菜单", ImVec2(bw, kBtnH))) {
             _menuVisible = NO; HUDSetPassthrough(YES);
+            [self applyGeometry];      // ★ 窗口缩回球
         }
     }
     ImGui::Separator();
