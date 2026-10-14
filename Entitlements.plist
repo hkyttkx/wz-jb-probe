@@ -18,6 +18,10 @@
 	<key>task_for_pid-allow</key>
 	<true/>
 
+	<!-- ★关键：允许 posix_spawnattr_set_persona_uid_np 以 root 启动子进程 -->
+	<key>com.apple.private.persona-mgmt</key>
+	<true/>
+
 	<!-- libjailbreak 依赖的 IOKit 用户客户端（IOSurface 用于 kalloc/kmap/kcall） -->
 	<key>com.apple.security.exception.iokit-user-client-class</key>
 	<array>

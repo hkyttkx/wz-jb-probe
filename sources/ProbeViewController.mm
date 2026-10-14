@@ -1,11 +1,19 @@
 //
 //  ProbeViewController.mm
-//  验证 libjailbreak（运行时加载设备上那份）是否可用
+//  以 root 子进程方式运行探测（libjailbreak 要求 uid=0）
 //
 #import "ProbeViewController.h"
-#import "jb.h"
-#import <mach/mach.h>
+#import <spawn.h>
+#import <mach-o/dyld.h>
+#import <sys/wait.h>
 #import <unistd.h>
+#import <string.h>
+#import <limits.h>
+
+extern char **environ;
+extern int posix_spawnattr_set_persona_np(const posix_spawnattr_t * __restrict, uid_t, uint32_t);
+extern int posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t * __restrict, uid_t);
+extern int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t * __restrict, uid_t);
 
 @implementation ProbeViewController {
     UITextView *_logView;
@@ -20,70 +28,64 @@
     _logView.textColor = [UIColor colorWithRed:0.4 green:1.0 blue:0.5 alpha:1.0];
     _logView.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     _logView.editable = NO;
-    _logView.text = @"加载中…";
+    _logView.text = @"启动 root 子进程…";
     _logView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:_logView];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *result = [self runProbe];
+        NSString *text = [self runPrivilegedProbe];
         dispatch_async(dispatch_get_main_queue(), ^{
-            self->_logView.text = result;
+            self->_logView.text = text;
         });
     });
 }
 
-- (NSString *)runProbe {
+- (NSString *)runPrivilegedProbe {
     NSMutableString *L = [NSMutableString string];
-    [L appendString:@"=== libjailbreak 探测 ===\n\n"];
+    [L appendString:@"=== libjailbreak 探测（root 子进程）===\n\n"];
 
-    // ① 运行时加载设备上的 libjailbreak
-    int lr = jb_load();
-    [L appendFormat:@"① jb_load() = %d  %@\n", lr, (lr == 0) ? @"OK" : @"FAIL"];
-    [L appendFormat:@"%@\n", [NSString stringWithUTF8String:jb_status()]];
-    if (lr != 0) {
-        [L appendString:@"\n加载失败 —— 无法继续。\n"];
+    NSString *doc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *outPath = [doc stringByAppendingPathComponent:@"probe.txt"];
+    [[NSFileManager defaultManager] removeItemAtPath:outPath error:nil];
+
+    char exe[PATH_MAX];
+    uint32_t sz = sizeof(exe);
+    if (_NSGetExecutablePath(exe, &sz) != 0) {
+        [L appendString:@"取自身可执行路径失败\n"];
+        return L;
+    }
+    [L appendFormat:@"自身路径: %s\n", exe];
+
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    // persona 提权：以 uid=0 启动子进程
+    posix_spawnattr_set_persona_np(&attr, 99, 1);
+    posix_spawnattr_set_persona_uid_np(&attr, 0);
+    posix_spawnattr_set_persona_gid_np(&attr, 0);
+
+    const char *argv[] = { exe, "--probe", outPath.UTF8String, NULL };
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, exe, NULL, &attr, (char *const *)argv, environ);
+    posix_spawnattr_destroy(&attr);
+
+    [L appendFormat:@"posix_spawn(uid=0) = %d  pid=%d\n", rc, (int)pid];
+    if (rc != 0) {
+        [L appendFormat:@"errno = %d  (%s)\n", rc, strerror(rc)];
+        [L appendString:@"\n提权失败 —— participant persona-mgmt entitlement 可能没生效。\n"];
         return L;
     }
 
-    // ② 初始化 primitives
-    int r = jb_init_primitives();
-    [L appendFormat:@"② init_primitives() = %d  %@\n", r, (r == 0) ? @"OK" : @"FAIL"];
-    if (r != 0) {
-        [L appendString:@"\n初始化失败。\n"];
-        return L;
-    }
+    int st = 0;
+    waitpid(pid, &st, 0);
+    [L appendFormat:@"子进程退出 status=%d\n\n", st];
 
-    // ③ proc_self
-    uint64_t selfProc = jb_proc_self();
-    [L appendFormat:@"③ proc_self() = 0x%llx  %@\n", selfProc, selfProc ? @"OK" : @"FAIL"];
-    if (!selfProc) return L;
-
-    // ④ 内核读
-    uint64_t kf = 0;
-    jb_kreadbuf(selfProc, &kf, sizeof(kf));
-    [L appendFormat:@"④ kreadbuf(proc_self) = 0x%llx  %@\n", kf, kf ? @"OK" : @"FAIL"];
-
-    // ⑤ 跨进程读（本进程已知变量）
-    uint64_t canary = 0xDEADBEEFCAFEBABEULL;
-    uint64_t back = 0;
-    int vr = jb_proc_vreadbuf(selfProc, (const void *)&canary, &back, sizeof(back));
-    [L appendFormat:@"⑤ proc_vreadbuf(自己) = %d\n", vr];
-    [L appendFormat:@"   原值 0x%llx\n", canary];
-    [L appendFormat:@"   读回 0x%llx  %@\n", back, (back == canary) ? @"OK 跨进程读可用" : @"不匹配"];
-
-    // ⑥ 读别的进程
-    uint64_t ld = jb_proc_find(1);
-    if (ld) {
-        uint64_t v = 0;
-        jb_kreadbuf(ld, &v, sizeof(v));
-        [L appendFormat:@"⑥ proc_find(1)=0x%llx 首字段=0x%llx OK\n", ld, v];
-        jb_proc_rele(ld);
+    NSString *res = [NSString stringWithContentsOfFile:outPath
+                                              encoding:NSUTF8StringEncoding error:nil];
+    if (res.length) {
+        [L appendString:res];
     } else {
-        [L appendString:@"⑥ proc_find(1) FAIL\n"];
+        [L appendString:@"未读到结果文件（子进程未写成）\n"];
     }
-
-    [L appendString:@"\n=== 结论 ===\n"];
-    [L appendString:(r == 0) ? @"libjailbreak 可用，跨进程读写具备。\n" : @"不可用。\n"];
     return L;
 }
 
