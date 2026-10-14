@@ -21,6 +21,11 @@ jobs:
       - name: Generate Xcode project
         run: |
           xcodegen generate
+          # xcodegen 会生成 Xcode 16 的格式(77)，runner 是 Xcode 15，需降级
+          PBX=WZJBProbe.xcodeproj/project.pbxproj
+          sed -i '' 's/objectVersion = 77;/objectVersion = 56;/' "$PBX"
+          sed -i '' 's/compatibilityVersion = "Xcode 16.0";/compatibilityVersion = "Xcode 14.0";/' "$PBX"
+          grep -E 'objectVersion|compatibilityVersion' "$PBX" | head -4
           ls -la
 
       - name: Build (no code sign)
