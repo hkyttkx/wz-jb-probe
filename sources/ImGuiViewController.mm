@@ -59,6 +59,7 @@ static const float kBtnW = 250.0f;
     CGPoint _panelPos;      // 菜单左上角（屏幕 point）
     BOOL _hasBallPos;
     BOOL _hasPanelPos;
+    BOOL _drawing;   // 跨进程绘制是否运行中
 }
 
 - (void)viewDidLoad {
@@ -205,6 +206,28 @@ static const float kBtnW = 250.0f;
     }
     free(pids);
     _procCount = cnt;
+}
+
+- (void)runJobAsync:(NSArray<NSString *> *)args {
+    NSString *out = [self outPath];
+    [[NSFileManager defaultManager] removeItemAtPath:out error:nil];
+    self.outputText = @"跨进程绘制已启动，看桌面/游戏画面";
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        char exe[PATH_MAX]; uint32_t sz = sizeof(exe);
+        if (_NSGetExecutablePath(exe, &sz) != 0) return;
+        posix_spawnattr_t attr; posix_spawnattr_init(&attr);
+        posix_spawnattr_set_persona_np(&attr, 99, 1);
+        posix_spawnattr_set_persona_uid_np(&attr, 0);
+        posix_spawnattr_set_persona_gid_np(&attr, 0);
+        const char *argv[8]; int c = 0;
+        argv[c++] = exe;
+        for (NSString *a in args) argv[c++] = a.UTF8String;
+        argv[c++] = out.UTF8String;
+        argv[c] = NULL;
+        pid_t pid = 0;
+        (void)posix_spawn(&pid, exe, NULL, &attr, (char *const *)argv, environ);
+        posix_spawnattr_destroy(&attr);
+    });
 }
 
 - (void)runJob:(NSArray<NSString *> *)args {

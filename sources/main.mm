@@ -29,6 +29,50 @@ uint64_t proc_find_by_name(const char *name);   // taskrop/utils.m
 #define PROC_PIDPATHINFO_MAXSIZE 4096
 #endif
 
+// ─────────────────────────────────────────────────────────────
+//  --draw <out>：跨进程绘制（在 SpringBoard 上画东西）
+// ─────────────────────────────────────────────────────────────
+extern "C" {
+int  SBDrawInit(void);
+int  SBDrawCreate(void);
+int  SBDrawTick(void);
+void SBDrawDestroy(void);
+uint64_t SBDrawWindow(void);
+}
+
+static int do_draw_test(const char *outpath) {
+    // 写 pid 文件（App 用 --exit 停）
+    {
+        NSString *pidStr = [NSString stringWithFormat:@"%d", getpid()];
+        [pidStr writeToFile:@"/var/mobile/Library/Caches/com.wz.jbprobe.hud.pid"
+                 atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+    FILE *f = fopen(outpath, "w");
+    #define LOG(fmt, ...) do { if (f) { fprintf(f, fmt "\n", ##__VA_ARGS__); fflush(f); } } while (0)
+    LOG("uid=%d", (int)getuid());
+
+    int r = SBDrawInit();
+    LOG("SBDrawInit = %d %s", r, r == 0 ? "OK" : "FAIL");
+    if (r != 0) { if (f) fclose(f); return r; }
+
+    r = SBDrawCreate();
+    LOG("SBDrawCreate = %d %s (win=0x%llx)", r, r == 0 ? "OK" : "FAIL", SBDrawWindow());
+    if (r != 0) { if (f) fclose(f); return r; }
+
+    LOG("开始持续绘制，点「停止绘制」结束");
+    int n = 0;
+    while (n < 3600) {          // 最多 1 小时
+        SBDrawTick();
+        n++;
+        usleep(120000);         // ~8fps（跨进程调用开销大）
+        if ((n % 20) == 0) LOG("tick #%d", n);
+    }
+    SBDrawDestroy();
+    if (f) fclose(f);
+    return 0;
+    #undef LOG
+}
+
 // HUD 进程 pid 文件
 #define WZ_PID_PATH "/var/mobile/Library/Caches/com.wz.jbprobe.hud.pid"
 
@@ -284,6 +328,9 @@ int main(int argc, char *argv[]) {
     @autoreleasepool {
         if (argc > 1 && strcmp(argv[1], "--hud") == 0) {
             return HUDHostRun();          // root 宿主：自建 UIApplication + 全局触摸
+        }
+        if (argc > 2 && strcmp(argv[1], "--draw") == 0) {
+            return do_draw_test(argv[2]);
         }
         if (argc > 2 && strcmp(argv[1], "--sbtest") == 0) {
             return do_springboard_test(argv[2]);
