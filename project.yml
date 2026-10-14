@@ -26,6 +26,13 @@ targets:
     platform: iOS
     sources:
       - path: sources
+    dependencies:
+      - sdk: UIKit.framework
+      - sdk: Foundation.framework
+      - sdk: CoreGraphics.framework
+      - sdk: QuartzCore.framework
+      - sdk: IOKit.framework
+      - sdk: Security.framework
     settings:
       base:
         INFOPLIST_FILE: Info.plist
