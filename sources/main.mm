@@ -100,16 +100,17 @@ static int do_wz_read(pid_t target, const char *outpath) {
     int off = 0;
     off += snprintf(buf+off, sizeof(buf)-off, "uid=%d\n", (int)getuid());
 
+    do {
     // 越狱：绑定跨进程读
     if (jb_load() != 0) {
         off += snprintf(buf+off, sizeof(buf)-off, "jb_load 失败: %s\n", jb_status());
-        goto wzwrite;
+        break;
     }
     int r = WZReadInit(target);
     off += snprintf(buf+off, sizeof(buf)-off, "WZReadInit = %d\n", r);
     if (r != 0) {
         off += snprintf(buf+off, sizeof(buf)-off, "  %s\n", WZReadStatus());
-        goto wzwrite;
+        break;
     }
     {
         char pb[8192]; WZReadProbe(pb, sizeof(pb));
@@ -131,7 +132,8 @@ static int do_wz_read(pid_t target, const char *outpath) {
                 pl[i].blood, pl[i].headId, pl[i].online);
         }
     }
-wzwrite:
+    } while (0);
+
     { FILE *f=fopen(outpath,"w"); if(f){ fwrite(buf,1,off,f); fclose(f);} }
     return 0;
 }
