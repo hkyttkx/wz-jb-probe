@@ -1,7 +1,11 @@
 //
-//  jb.h — libjailbreak 导出符号的最小声明
-//  只声明我们用到的，避免引入整套头文件依赖。
-//  符号来源：Vendor/libjailbreak.dylib（Dopamine/Relaxin 系）
+//  jb.h — libjailbreak 运行时加载封装
+//
+//  不静态链接 dylib，改为运行时：
+//    ① 扫描 RootHide 的 jbroot（.jbroot-<hex>）
+//    ② dlopen 其中的 libjailbreak.dylib
+//    ③ dlsym 取符号
+//  这样用的是设备上那份（版本必然匹配）。
 //
 #ifndef JB_H
 #define JB_H
@@ -14,28 +18,21 @@
 extern "C" {
 #endif
 
-// ── 初始化 ───────────────────────────────────────────
-// 越狱环境下连接 jailbreakd，取得 kernel r/w primitives
-int jbclient_initialize_primitives(void);
+// 返回 0 成功，非 0 失败
+int  jb_load(void);
+const char *jb_status(void);        // 人类可读的状态/路径信息
+const char *jb_error(void);
 
-// ── 进程查找 ─────────────────────────────────────────
-uint64_t proc_self(void);
-uint64_t proc_find(pid_t pid);
-uint64_t proc_task(uint64_t proc);
-int      proc_rele(uint64_t proc);
-
-// ── 跨进程读写（我们要的）─────────────────────────────
-int proc_vreadbuf(uint64_t proc, const void *addr, void *outdata, size_t datalen);
-int proc_vwritebuf(uint64_t proc, const void *addr, const void *indata, size_t datalen);
-
-// ── 内核读写 ─────────────────────────────────────────
-int      kreadbuf(uint64_t kaddr, void *output, size_t size);
-int      kwritebuf(uint64_t kaddr, const void *input, size_t size);
-uint64_t kread64(uint64_t va);
-int      kwrite64(uint64_t va, uint64_t v);
-
-// ── 内核调用 ─────────────────────────────────────────
-int kcall(uint64_t *result, uint64_t func, int argc, const uint64_t *argv);
+// 加载成功后才可用
+int      jb_init_primitives(void);  // 首选 jailbreakd 入口，回退旧入口
+uint64_t jb_proc_self(void);
+uint64_t jb_proc_find(pid_t pid);
+uint64_t jb_proc_task(uint64_t proc);
+int      jb_proc_rele(uint64_t proc);
+int      jb_proc_vreadbuf(uint64_t proc, const void *addr, void *out, size_t len);
+int      jb_kreadbuf(uint64_t kaddr, void *out, size_t size);
+uint64_t jb_kread64(uint64_t va);
+int      jb_kcall(uint64_t *result, uint64_t func, int argc, const uint64_t *argv);
 
 #ifdef __cplusplus
 }

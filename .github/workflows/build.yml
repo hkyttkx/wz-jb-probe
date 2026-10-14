@@ -53,19 +53,15 @@ jobs:
           fi
           echo "APP_PATH=$APP" >> $GITHUB_ENV
 
-      - name: Bundle dylibs + pseudo-sign with ldid
+      - name: Pseudo-sign with ldid
         run: |
           set -e
           APP="${{ env.APP_PATH }}"
           echo "APP=$APP"
-          # libjailbreak 的 install_name 是 @loader_path/libjailbreak.dylib，
-          # 所以 dylib 必须和主可执行文件放在同一目录（.app/ 顶层）
-          cp Vendor/libjailbreak.dylib "$APP/"
-          cp Vendor/libchoma.dylib "$APP/"
-          # ldid 伪签名（带 entitlements）
+          # 不再打包 dylib：运行时扫描 jbroot 并 dlopen 设备上那份
           ldid -SEntitlements.plist "$APP/$(basename $APP .app)"
-          # 校验签名
-          ldid -e "$APP/$(basename $APP .app)" | head -30 || true
+          echo "--- 已签名的 entitlements ---"
+          ldid -e "$APP/$(basename $APP .app)" | head -40 || true
           ls -la "$APP/"
 
       - name: Package IPA

@@ -39,11 +39,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Entitlements.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.wz.jbprobe
         PRODUCT_NAME: WZJBProbe
-        # 链接 Vendor 下的 libjailbreak / libchoma
         HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/sources
-        LIBRARY_SEARCH_PATHS: $(inherited) $(SRCROOT)/Vendor
-        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/Vendor -ljailbreak -lchoma
-        # dylib 通过 @loader_path 加载，运行时从 .app/ 目录找
-        LD_RUNPATH_SEARCH_PATHS: $(inherited) @executable_path @executable_path/Frameworks
+        # 不再链接 dylib：改为运行时扫描 jbroot + dlopen 设备上那份
+        LD_RUNPATH_SEARCH_PATHS: $(inherited) @executable_path
         # 关闭对私有 API 的检查（我们用了大量 SPI）
         CLANG_WARN_DOCUMENTATION_COMMENTS: NO
