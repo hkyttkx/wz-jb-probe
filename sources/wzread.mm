@@ -110,38 +110,6 @@ extern "C" kern_return_t mach_vm_region(vm_map_t target_task,
                                         unsigned *infoCnt,
                                         mach_port_t *object_name);
 
-// 用 task port 枚举区域（regions 用地址+大小，路径另外查）
-static void scanRegionsMVM(void) {
-    g_regCount = 0;
-    if (g_task == MACH_PORT_NULL) { os_log(OS_LOG_DEFAULT, "[wzread] 无 task port"); return; }
-    uint64_t addr = 0;
-    while (addr < 0x0000FFFF00000000ULL && g_regCount < 64) {
-        uint64_t size = 0;
-        vm_region_basic_info_data_64_t info;
-        unsigned cnt = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t obj = MACH_PORT_NULL;
-        kern_return_t kr = mach_vm_region(g_task, &addr, &size, VM_REGION_BASIC_INFO_64,
-                                          &info, &cnt, &obj);
-        if (kr != KERN_SUCCESS || size == 0) break;
-        // 只记录可读且较大的区域（模块/堆）
-        if ((info.protection & 1) && size >= 0x1000) {
-            g_regs[g_regCount].addr = addr;
-            g_regs[g_regCount].size = size;
-            g_regCount++;
-        }
-        addr += size;
-    }
-    // 路径信息另查（proc_pidinfo 有就用，没有就算了）
-    for (int i = 0; i < g_regCount; i++) {
-        char path[512] = {0};
-        // 尝试用 sysctl/proc_pidinfo 补路径（失败不影响）
-        (void)path;
-    }
-    snprintf(g_status, sizeof(g_status),
-             "pid=%d proc=0x%llx task=%d regions=%d",
-             g_pid, g_proc, g_task, g_regCount);
-}
-
 // ── 找 GameAssembly 的内存区域 ───────────────────────
 typedef struct { uint64_t addr; uint64_t size; } Reg;
 static Reg g_regs[64];
@@ -179,6 +147,39 @@ static void scanRegions(void) {
              "pid=%d proc=0x%llx GA=0x%llx(0x%llx) regions=%d",
              g_pid, g_proc, g_ga_base, g_ga_size, g_regCount);
 }
+
+// 用 task port 枚举区域（regions 用地址+大小，路径另外查）
+static void scanRegionsMVM(void) {
+    g_regCount = 0;
+    if (g_task == MACH_PORT_NULL) { os_log(OS_LOG_DEFAULT, "[wzread] 无 task port"); return; }
+    uint64_t addr = 0;
+    while (addr < 0x0000FFFF00000000ULL && g_regCount < 64) {
+        uint64_t size = 0;
+        vm_region_basic_info_data_64_t info;
+        unsigned cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj = MACH_PORT_NULL;
+        kern_return_t kr = mach_vm_region(g_task, &addr, &size, VM_REGION_BASIC_INFO_64,
+                                          &info, &cnt, &obj);
+        if (kr != KERN_SUCCESS || size == 0) break;
+        // 只记录可读且较大的区域（模块/堆）
+        if ((info.protection & 1) && size >= 0x1000) {
+            g_regs[g_regCount].addr = addr;
+            g_regs[g_regCount].size = size;
+            g_regCount++;
+        }
+        addr += size;
+    }
+    // 路径信息另查（proc_pidinfo 有就用，没有就算了）
+    for (int i = 0; i < g_regCount; i++) {
+        char path[512] = {0};
+        // 尝试用 sysctl/proc_pidinfo 补路径（失败不影响）
+        (void)path;
+    }
+    snprintf(g_status, sizeof(g_status),
+             "pid=%d proc=0x%llx task=%d regions=%d",
+             g_pid, g_proc, g_task, g_regCount);
+}
+
 
 extern "C" void WZReadProbe(char *out, size_t n) {
     int o = 0;
