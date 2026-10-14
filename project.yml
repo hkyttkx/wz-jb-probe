@@ -26,6 +26,7 @@ targets:
     platform: iOS
     sources:
       - path: sources
+      - path: Vendor/imgui
     dependencies:
       - sdk: UIKit.framework
       - sdk: Foundation.framework
@@ -33,6 +34,8 @@ targets:
       - sdk: QuartzCore.framework
       - sdk: IOKit.framework
       - sdk: Security.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
     settings:
       base:
         INFOPLIST_FILE: Info.plist
