@@ -22,6 +22,8 @@ int proc_listallpids(void *buffer, int buffersize);
 int proc_name(int pid, void *buffer, unsigned int buffersize);
 int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
 int HUDHostRun(void);      // root HUD 宿主（HUDHost.mm）
+void ds_sync_kernel_info(void);                 // ds_compat.mm
+uint64_t proc_find_by_name(const char *name);   // taskrop/utils.m
 }
 #ifndef PROC_PIDPATHINFO_MAXSIZE
 #define PROC_PIDPATHINFO_MAXSIZE 4096
