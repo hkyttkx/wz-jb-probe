@@ -49,6 +49,17 @@ extern "C" void ds_sync_kernel_info(void) { }
 
 // 从 libjailbreak 的 gSystemInfo 取内核虚拟基址（标准 16 位形态）
 // kernelConstant: slide=0x00 staticBase=0x08 base=0x10 virtBase=0x18
+// 诊断：暴露 g_sysinfo 状态和字段
+extern "C" void jb_diag_sysinfo(char *out, size_t n, const char *tag) {
+    int o = snprintf(out, n, "[%s] handle=%p sysinfo=%p\n", tag,
+                     g_jb_handle, g_sysinfo);
+    if (g_sysinfo) {
+        uint64_t *w = (uint64_t *)g_sysinfo;
+        o += snprintf(out + o, n - o, "  w0=0x%llx w1=0x%llx w2=0x%llx w3=0x%llx\n",
+                      w[0], w[1], w[2], w[3]);
+    }
+}
+
 extern "C" uint64_t jb_kernel_virtbase(void) {
     if (!g_sysinfo) return 0;
     uint8_t *p = (uint8_t *)g_sysinfo;

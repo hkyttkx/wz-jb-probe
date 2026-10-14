@@ -33,6 +33,7 @@ extern uint64_t kernel_slide;
 void     init_offsets(void);
 int      ds_run(void);
 uint64_t jb_kernel_virtbase(void);
+void     jb_diag_sysinfo(char *out, size_t n, const char *tag);
 }
 #ifndef PROC_PIDPATHINFO_MAXSIZE
 #define PROC_PIDPATHINFO_MAXSIZE 4096
@@ -115,6 +116,8 @@ static int do_springboard_test(const char *outpath) {
 
     // DS 算出的 kernel_base 位宽不对（ds_isvalid 会拒绝），用 libjailbreak 的 virtBase 修正
     {
+        char sd[512]; jb_diag_sysinfo(sd, sizeof(sd), "sysinfo");
+        off += snprintf(buf + off, sizeof(buf) - off, "%s", sd);
         uint64_t vb = jb_kernel_virtbase();
         off += snprintf(buf + off, sizeof(buf) - off,
                         "DS kbase=0x%llx  virtBase=0x%llx\n", kernel_base, vb);
