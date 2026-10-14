@@ -47,6 +47,8 @@ struct {
 } gSystemInfo;
 }
 
+extern "C" {
+
 // ── DS 依赖的全局内核基址（原在 darksword.m 里，这里用 libjailbreak 的值）──
 uint64_t kernel_base  = 0;
 uint64_t kernel_slide = 0;
@@ -113,3 +115,4 @@ uint64_t ds_get_our_task(void)        { return proc_task(proc_self()); }
 
 bool ds_adopt_krw(int c, int r, uint64_t b, uint64_t s) { (void)c;(void)r;(void)b;(void)s; return false; }
 void ds_set_xproc_lock_path(const char *p) { (void)p; }
+}  // extern "C"
