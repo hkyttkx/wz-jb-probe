@@ -84,13 +84,31 @@ int      control_socket = -1;
 int      rw_socket      = -1;
 
 // 由宿主在启用时调用一次，把 libjailbreak 的内核信息同步过来
-// gSystemInfo = struct system_info { struct { u64 slide; u64 staticBase; u64 base; ... } kernelConstant; ... }
-// 偏移：slide = 0x0, staticBase = 0x8, base = 0x10
+// gSystemInfo = struct system_info {
+//   struct { u64 slide; u64 staticBase; u64 base; u64 virtBase; ... } kernelConstant;
+// }
+// 偏移：slide=0x00  staticBase=0x08  base=0x10  virtBase=0x18
+// 实测：0x10 拿到的是 slide 相关的值，真正供 kread 用的是 virtBase(0x18)
+//       （内核 __TEXT 标准基址形态 0xfffffff007004000）
 void ds_sync_kernel_info(void) {
     if (!g_sysinfo) return;
     uint8_t *p = (uint8_t *)g_sysinfo;
-    kernel_slide = *(uint64_t *)(p + 0x00);
-    kernel_base  = *(uint64_t *)(p + 0x10);
+    uint64_t v_slide  = *(uint64_t *)(p + 0x00);
+    uint64_t v_static = *(uint64_t *)(p + 0x08);
+    uint64_t v_base   = *(uint64_t *)(p + 0x10);
+    uint64_t v_virt   = *(uint64_t *)(p + 0x18);
+
+    kernel_slide = v_slide;
+
+    // 选一个"能直接用于 kread"的内核基址：
+    // 优先 virtBase（实测是 0xfffffff007004000 形态），
+    // 否则退回 staticBase，再不行用 base。
+    if (v_virt >= 0xfffffff000000000ULL)      kernel_base = v_virt;
+    else if (v_static >= 0xfffffff000000000ULL) kernel_base = v_static;
+    else if (v_base >= 0xfffffff000000000ULL)   kernel_base = v_base;
+
+    os_log(OS_LOG_DEFAULT, "[ds] base=0x%llx static=0x%llx virt=0x%llx slide=0x%llx -> kbase=0x%llx",
+           v_base, v_static, v_virt, v_slide, kernel_base);
 }
 
 // ── ds_* 全套实现 ────────────────────────────────────
