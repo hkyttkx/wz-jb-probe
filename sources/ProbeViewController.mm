@@ -54,19 +54,19 @@
     }
 
     // ③ proc_self
-    uint64_t self = jb_proc_self();
-    [L appendFormat:@"③ proc_self() = 0x%llx  %@\n", self, self ? @"OK" : @"FAIL"];
-    if (!self) return L;
+    uint64_t selfProc = jb_proc_self();
+    [L appendFormat:@"③ proc_self() = 0x%llx  %@\n", selfProc, selfProc ? @"OK" : @"FAIL"];
+    if (!selfProc) return L;
 
     // ④ 内核读
     uint64_t kf = 0;
-    jb_kreadbuf(self, &kf, sizeof(kf));
+    jb_kreadbuf(selfProc, &kf, sizeof(kf));
     [L appendFormat:@"④ kreadbuf(proc_self) = 0x%llx  %@\n", kf, kf ? @"OK" : @"FAIL"];
 
     // ⑤ 跨进程读（本进程已知变量）
     uint64_t canary = 0xDEADBEEFCAFEBABEULL;
     uint64_t back = 0;
-    int vr = jb_proc_vreadbuf(self, (const void *)&canary, &back, sizeof(back));
+    int vr = jb_proc_vreadbuf(selfProc, (const void *)&canary, &back, sizeof(back));
     [L appendFormat:@"⑤ proc_vreadbuf(自己) = %d\n", vr];
     [L appendFormat:@"   原值 0x%llx\n", canary];
     [L appendFormat:@"   读回 0x%llx  %@\n", back, (back == canary) ? @"OK 跨进程读可用" : @"不匹配"];
