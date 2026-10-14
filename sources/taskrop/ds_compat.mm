@@ -47,6 +47,18 @@ struct {
 } gSystemInfo;
 }
 
+// ── DS 依赖的全局内核基址（原在 darksword.m 里，这里用 libjailbreak 的值）──
+uint64_t kernel_base  = 0;
+uint64_t kernel_slide = 0;
+int      control_socket = -1;
+int      rw_socket      = -1;
+
+// 由宿主在启用时调用一次，把 libjailbreak 的内核信息同步过来
+void ds_sync_kernel_info(void) {
+    kernel_base  = gSystemInfo.kernelConstant.base;
+    kernel_slide = gSystemInfo.kernelConstant.slide;
+}
+
 // ── ds_* 全套实现 ────────────────────────────────────
 void ds_set_log_callback(void (*cb)(const char *))   { (void)cb; }
 void ds_set_progress_callback(void (*cb)(double))    { (void)cb; }
