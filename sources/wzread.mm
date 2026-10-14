@@ -90,18 +90,7 @@ static int readable(uint64_t p) {
 
 // ── 手写声明（iOS SDK 禁用了 mach_vm.h）──
 typedef int vm_region_flavor_t;
-typedef struct vm_region_basic_info_64 {
-    int      protection;
-    int      max_protection;
-    uint32_t inheritance;
-    uint8_t  shared;
-    uint8_t  reserved;
-    uint32_t offset;
-    int      behavior;
-    uint16_t user_wired_count;
-} vm_region_basic_info_data_64_t;
-#define VM_REGION_BASIC_INFO_64 9
-#define VM_REGION_BASIC_INFO_COUNT_64 9
+#import <mach/vm_region.h>
 extern "C" kern_return_t mach_vm_region(vm_map_t target_task,
                                         uint64_t *address,
                                         uint64_t *size,
@@ -156,7 +145,7 @@ static void scanRegionsMVM(void) {
     while (addr < 0x0000FFFF00000000ULL && g_regCount < 64) {
         uint64_t size = 0;
         vm_region_basic_info_data_64_t info;
-        unsigned cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
         mach_port_t obj = MACH_PORT_NULL;
         kern_return_t kr = mach_vm_region(g_task, &addr, &size, VM_REGION_BASIC_INFO_64,
                                           &info, &cnt, &obj);
