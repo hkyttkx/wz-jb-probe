@@ -25,6 +25,7 @@ int HUDHostRun(void);      // root HUD 宿主（HUDHost.mm）
 void ds_sync_kernel_info(void);                 // ds_compat.mm
 uint64_t proc_find_by_name(const char *name);   // taskrop/utils.m
 void     ds_diag(char *out, size_t n, const char *tag);
+void     ds_probe_basics(char *out, size_t n);
 uint64_t ds_kread64(uint64_t a);
 void     offsets_init(void);
 extern uint64_t kernel_base;
@@ -110,7 +111,7 @@ static int do_springboard_test(const char *outpath) {
 
     // ①.5 诊断
     {
-        char pb[2048]; extern "C" void ds_probe_basics(char *out, size_t n);
+        char pb[2048];
         ds_probe_basics(pb, sizeof(pb));
         off += snprintf(buf + off, sizeof(buf) - off, "%s", pb);
         char d[1024]; ds_diag(d, sizeof(d), "after-init");
