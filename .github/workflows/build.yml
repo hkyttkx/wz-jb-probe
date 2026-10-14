@@ -58,7 +58,15 @@ jobs:
           set -e
           APP="${{ env.APP_PATH }}"
           echo "APP=$APP"
-          # 运行期才 dlopen 设备 jbroot 里的 libjailbreak，不随包
+          # 三个 dylib 的 install_name 不同，必须各放对位置
+          cp Vendor/libchoma.dylib "$APP/"                       # @loader_path/
+          mkdir -p "$APP/Frameworks"
+          cp Vendor/libxpf.dylib "$APP/Frameworks/"              # @executable_path/Frameworks/
+          cp Vendor/libgrabkernel2.dylib "$APP/Frameworks/"      # @rpath/ (rpath 含 Frameworks)
+          echo "--- 布置结果 ---"
+          ls -la "$APP/" "$APP/Frameworks/"
+          # 校验每个依赖是否能被 dyld 解析
+          otool -L "$APP/$(basename $APP .app)" | head -20 || true
           ldid -SEntitlements.plist "$APP/$(basename $APP .app)"
           echo "--- 已签名的 entitlements ---"
           ldid -e "$APP/$(basename $APP .app)" | head -40 || true
