@@ -170,6 +170,32 @@ extern "C" void ds_diag(char *out, size_t n, const char *tag) {
     }
 }
 
+// ★ 基础能力对照：把 libjailbreak 的原始能力和 DS 的能力分别测一遍
+extern "C" void ds_probe_basics(char *out, size_t n) {
+    int o = 0;
+    // A. libjailbreak 的原始能力（这些前面已证明可用）
+    uint64_t kb = kernel_base;
+    uint64_t magic = (p_kread64 && kb) ? p_kread64(kb) : 0;
+    uint64_t ps = p_proc_self ? p_proc_self() : 0;
+    uint64_t p1 = p_proc_find ? p_proc_find(1) : 0;
+    o += snprintf(out + o, n - o,
+        "[libjailbreak] kbase=0x%llx\n"
+        "  kread64(kbase)   = 0x%llx   (内核 Mach-O magic 应 ~0xfeedfacf)\n"
+        "  proc_self()      = 0x%llx\n"
+        "  proc_find(1)     = 0x%llx\n",
+        kb, magic, ps, p1);
+    // B. DS 那套（走 off_* + 链表）
+    uint64_t dsSelf = 0, dsSb = 0;
+    uint64_t dsKern = ds_kread64(kb);
+    dsSelf = ds_get_our_proc();
+    dsSb   = proc_find_by_name("SpringBoard");
+    o += snprintf(out + o, n - o,
+        "[DS] ds_kread64(kbase) = 0x%llx\n"
+        "  ds_get_our_proc()= 0x%llx\n"
+        "  proc_find_by_name(SpringBoard) = 0x%llx\n",
+        dsKern, dsSelf, dsSb);
+}
+
 uint64_t ds_get_kernel_base(void)  { return kernel_base; }
 uint64_t ds_get_kernel_slide(void) { return kernel_slide; }
 

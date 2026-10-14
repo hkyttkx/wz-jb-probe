@@ -110,6 +110,9 @@ static int do_springboard_test(const char *outpath) {
 
     // ①.5 诊断
     {
+        char pb[2048]; extern "C" void ds_probe_basics(char *out, size_t n);
+        ds_probe_basics(pb, sizeof(pb));
+        off += snprintf(buf + off, sizeof(buf) - off, "%s", pb);
         char d[1024]; ds_diag(d, sizeof(d), "after-init");
         off += snprintf(buf + off, sizeof(buf) - off, "%s\n", d);
         uint64_t t = kernel_base ? ds_kread64(kernel_base + 0x100) : 0;
