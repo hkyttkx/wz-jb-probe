@@ -15,3 +15,10 @@
 @interface UIWindow (HUDPrivate)
 - (unsigned int)_contextId;
 @end
+
+// 触摸穿透控制（YES = 点到下层游戏）
+void HUDSetPassthrough(BOOL v);
+BOOL HUDGetPassthrough(void);
+
+// 把窗口注册到 SpringBoard 的窗口托管服务
+BOOL HUDRegisterWindow(HUDWindow *win);

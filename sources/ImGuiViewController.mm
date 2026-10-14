@@ -60,6 +60,7 @@ static bool ci_contains(const char *hay, const char *needle) {
     int  _selRow;
     char _filter[64];
     dispatch_source_t _timer;
+    BOOL _menuVisible;
 }
 
 - (void)viewDidLoad {
