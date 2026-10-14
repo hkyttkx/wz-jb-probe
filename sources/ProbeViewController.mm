@@ -11,9 +11,13 @@
 #import <limits.h>
 
 extern char **environ;
-extern int posix_spawnattr_set_persona_np(const posix_spawnattr_t * __restrict, uid_t, uint32_t);
-extern int posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t * __restrict, uid_t);
-extern int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t * __restrict, uid_t);
+
+// 私有 SPI：必须以 C 链接声明（.mm 里默认是 C++ 修饰名）
+extern "C" {
+int posix_spawnattr_set_persona_np(const posix_spawnattr_t * __restrict, uid_t, uint32_t);
+int posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t * __restrict, uid_t);
+int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t * __restrict, uid_t);
+}
 
 @implementation ProbeViewController {
     UITextView *_logView;
