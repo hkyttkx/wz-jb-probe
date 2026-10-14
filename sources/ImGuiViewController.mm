@@ -54,6 +54,33 @@ int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t * __restrict, uid
     ImGuiStyle &st = ImGui::GetStyle();
     st.WindowRounding = 8.0f;
     st.FrameRounding  = 5.0f;
+    st.WindowBorderSize = 1.0f;
+
+    // ── 中文字体（从 Superman 那套搬来：阿里巴巴惠普体 + ChineseFull 字形集）──
+    {
+        ImGuiIO &io = ImGui::GetIO();
+        io.Fonts->Clear();
+
+        static ImFontConfig cfg;
+        cfg.FontDataOwnedByAtlas = false;
+        cfg.OversampleH = 1;
+        cfg.OversampleV = 1;
+
+        static ImVector<ImWchar> ranges;
+        ImFontGlyphRangesBuilder b;
+        b.AddRanges(io.Fonts->GetGlyphRangesDefault());
+        b.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+        b.BuildRanges(&ranges);
+
+        NSString *fp = [[NSBundle mainBundle] pathForResource:@"font" ofType:@"ttf"];
+        if (fp) {
+            io.Fonts->AddFontFromFileTTF(fp.UTF8String, 30.0f, &cfg, ranges.Data);
+        } else {
+            io.Fonts->AddFontDefault();
+        }
+        io.Fonts->Build();
+    }
+
     ImGui_ImplMetal_Init(device);
 
     self.probeText = @"（尚未运行探测）";
@@ -131,34 +158,44 @@ int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t * __restrict, uid
 
 - (void)drawUI {
     ImGuiIO &io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(16, 60), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 32, io.DisplaySize.y - 140), ImGuiCond_FirstUseEver);
+    const float W = io.DisplaySize.x, H = io.DisplaySize.y;
 
-    ImGui::Begin("WZ Probe — libjailbreak", NULL, ImGuiWindowFlags_NoCollapse);
-    ImGui::Text("状态: %s", self.probeDone ? "已完成" : (self.probeRunning ? "运行中…" : "待运行"));
-    ImGui::Separator();
+    // ── 主面板 ───────────────────────────────
+    ImGui::SetNextWindowPos(ImVec2(24, 110), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(W - 48, H - 260), ImGuiCond_Always);
 
-    if (ImGui::Button("重新探测")) {
+    ImGui::Begin("WZ Probe · libjailbreak 状态", NULL, ImGuiWindowFlags_NoCollapse);
+
+    ImGui::Text("运行状态：%s", self.probeDone ? "已完成" : (self.probeRunning ? "运行中…" : "待运行"));
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "  内核读写：可用");
+
+    if (ImGui::Button("重新探测", ImVec2(140, 0))) {
         [self runRootProbe];
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("(root 子进程 / uid=0)");
+    ImGui::TextDisabled("(以 uid=0 子进程执行)");
 
     ImGui::Separator();
-    ImGui::BeginChild("out", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
+
+    ImGui::BeginChild("##out", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(self.probeText.UTF8String);
     ImGui::EndChild();
 
     ImGui::End();
 
-    // 底部提示条
-    ImGui::SetNextWindowPos(ImVec2(16, io.DisplaySize.y - 52), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 32, 36), ImGuiCond_Always);
+    // ── 底部状态条 ───────────────────────────
+    ImGui::SetNextWindowPos(ImVec2(24, H - 130), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(W - 48, 86), ImGuiCond_Always);
     ImGui::Begin("##status", NULL,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
-    ImGui::Text("ImGui %s | %.1f FPS | Metal", IMGUI_VERSION, io.Framerate);
+    ImGui::Text("ImGui %s", IMGUI_VERSION);
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "  %.1f FPS", io.Framerate);
+    ImGui::SameLine();
+    ImGui::TextDisabled("  Metal  |  Relaxin / RootHide  |  17.1.2");
     ImGui::End();
 }
 

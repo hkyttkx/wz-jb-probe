@@ -27,6 +27,7 @@ targets:
     sources:
       - path: sources
       - path: Vendor/imgui
+      - path: Resources
     dependencies:
       - sdk: UIKit.framework
       - sdk: Foundation.framework
