@@ -29,6 +29,7 @@ void     ds_probe_basics(char *out, size_t n);
 uint64_t ds_kread64(uint64_t a);
 void     offsets_init(void);
 extern uint64_t kernel_base;
+extern uint64_t kernel_slide;
 void     init_offsets(void);
 int      ds_run(void);
 }
