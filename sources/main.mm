@@ -119,7 +119,7 @@ static int do_wz_read(pid_t target, const char *outpath) {
     {
         uint64_t bi = WZFindBattleIns();
         off += snprintf(buf+off, sizeof(buf)-off, "Battle.Ins = 0x%llx\n", bi);
-        if (!bi) { off += snprintf(buf+off, sizeof(buf)-off, "  %s\n", WZReadStatus()); goto wzwrite; }
+        if (!bi) { off += snprintf(buf+off, sizeof(buf)-off, "  %s\n", WZReadStatus()); break; }
     }
     {
         static WZPlayer pl[256];
