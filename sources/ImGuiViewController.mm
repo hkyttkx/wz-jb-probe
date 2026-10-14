@@ -63,6 +63,7 @@ static const float kBtnW = 250.0f;
     BOOL _drawing;   // 跨进程绘制是否运行中
     BOOL _started;   // 是否已进入主菜单
     BOOL _showDraw;  // 是否显示绘制叠加
+    int  _wzDrawPid; // 要读的游戏 pid
 }
 
 - (void)viewDidLoad {
@@ -600,6 +601,22 @@ static const float kBtnW = 250.0f;
             [self runJob:@[ @"--exit" ]]; _drawing = NO;
         }
         ImGui::EndDisabled();
+    }
+    ImGui::Separator();
+
+    // ⑤.5 王牌战争读取
+    ImGui::TextColored(ImVec4(0.6f, 1.0f, 0.6f, 1.0f), "王牌战争 · 读取");
+    {
+        float half = (pw - 40.0f) * 0.5f - 4.0f;
+        ImGui::BeginDisabled(_selRow < 0 || self.busy);
+        if (ImGui::Button("探测内存", ImVec2(half, kBtnH)) && _selRow >= 0)
+            [self runJob:@[ @"--wz", [NSString stringWithFormat:@"%d", _procs[_selRow].pid] ]];
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("读玩家并绘制", ImVec2(half, kBtnH)) && _selRow >= 0) {
+            _wzDrawPid = _procs[_selRow].pid;
+            [self runJob:@[ @"--wz", [NSString stringWithFormat:@"%d", _procs[_selRow].pid] ]];
+        }
     }
     ImGui::Separator();
 

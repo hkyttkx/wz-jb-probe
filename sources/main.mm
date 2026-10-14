@@ -15,6 +15,7 @@
 #import <mach/mach.h>
 #import <mach-o/dyld_images.h>
 #import "RemoteCall.h"
+#import "wzread.h"
 
 // libproc：iOS SDK 不提供 libproc.h，自行声明
 extern "C" {
@@ -81,6 +82,58 @@ static int do_draw_test(const char *outpath) {
     if (f) fclose(f);
     return 0;
     #undef LOG
+}
+
+// ─────────────────────────────────────────────────────────────
+//  --wz <pid> <out>：读王牌战争数据（探测 + 扫描 + 读玩家）
+// ─────────────────────────────────────────────────────────────
+extern "C" {
+int  WZReadInit(pid_t pid);
+void WZReadProbe(char *out, size_t n);
+uint64_t WZFindBattleIns(void);
+int  WZReadPlayers(WZPlayer *out, int maxCount);
+const char *WZReadStatus(void);
+}
+
+static int do_wz_read(pid_t target, const char *outpath) {
+    char buf[16384];
+    int off = 0;
+    off += snprintf(buf+off, sizeof(buf)-off, "uid=%d\n", (int)getuid());
+
+    // 越狱：绑定跨进程读
+    if (jb_load() != 0) {
+        off += snprintf(buf+off, sizeof(buf)-off, "jb_load 失败: %s\n", jb_status());
+        goto wzwrite;
+    }
+    int r = WZReadInit(target);
+    off += snprintf(buf+off, sizeof(buf)-off, "WZReadInit = %d\n", r);
+    if (r != 0) {
+        off += snprintf(buf+off, sizeof(buf)-off, "  %s\n", WZReadStatus());
+        goto wzwrite;
+    }
+    {
+        char pb[8192]; WZReadProbe(pb, sizeof(pb));
+        off += snprintf(buf+off, sizeof(buf)-off, "%s\n", pb);
+    }
+    {
+        uint64_t bi = WZFindBattleIns();
+        off += snprintf(buf+off, sizeof(buf)-off, "Battle.Ins = 0x%llx\n", bi);
+        if (!bi) { off += snprintf(buf+off, sizeof(buf)-off, "  %s\n", WZReadStatus()); goto wzwrite; }
+    }
+    {
+        static WZPlayer pl[256];
+        int n = WZReadPlayers(pl, 256);
+        off += snprintf(buf+off, sizeof(buf)-off, "玩家数 = %d\n", n);
+        for (int i = 0; i < n && i < 30; i++) {
+            off += snprintf(buf+off, sizeof(buf)-off,
+                "  #%d obj=0x%llx pos=(%.1f,%.1f,%.1f) blood=%d head=%d online=%d\n",
+                i, pl[i].obj, pl[i].pos.x, pl[i].pos.y, pl[i].pos.z,
+                pl[i].blood, pl[i].headId, pl[i].online);
+        }
+    }
+wzwrite:
+    { FILE *f=fopen(outpath,"w"); if(f){ fwrite(buf,1,off,f); fclose(f);} }
+    return 0;
 }
 
 // HUD 进程 pid 文件
@@ -360,6 +413,9 @@ int main(int argc, char *argv[]) {
     @autoreleasepool {
         if (argc > 1 && strcmp(argv[1], "--hud") == 0) {
             return HUDHostRun();          // root 宿主：自建 UIApplication + 全局触摸
+        }
+        if (argc > 3 && strcmp(argv[1], "--wz") == 0) {
+            return do_wz_read((pid_t)atoi(argv[2]), argv[3]);
         }
         if (argc > 2 && strcmp(argv[1], "--draw") == 0) {
             return do_draw_test(argv[2]);
