@@ -46,6 +46,8 @@ static fn_i_r     p_kreadbuf  = NULL;
 static fn_i_w     p_kwritebuf = NULL;
 static fn_u64_v   p_proc_self = NULL;
 static fn_u64_i   p_proc_find = NULL;
+static void      *g_jb_handle = NULL;   // dlopen 的 libjailbreak
+static void      *g_sysinfo   = NULL;   // dlsym 拿到的 gSystemInfo 地址
 static fn_u64_u64 p_proc_task = NULL;
 
 // 由 jb_load() 之后调用，绑定符号
@@ -67,17 +69,10 @@ extern "C" int ds_compat_bind(void *h) {
     p_proc_self = (fn_u64_v)     dlsym(h, "proc_self");
     p_proc_find = (fn_u64_i)     dlsym(h, "proc_find");
     p_proc_task = (fn_u64_u64)   dlsym(h, "proc_task");
+    g_jb_handle = h;
+    g_sysinfo   = dlsym(h, "gSystemInfo");     // ★ 关键：拿真实地址
     return p_kread64 ? 0 : -1;
 }
-}
-// libjailbreak 的全局内核信息（info.h）
-extern "C" {
-struct {
-    struct { uint64_t slide; uint64_t staticBase; uint64_t base;
-             uint64_t virtBase; uint64_t virtSize; uint64_t physBase;
-             uint64_t physSize; uint64_t cpuTTEP; uint64_t kernel_el;
-             uint64_t pointer_mask; uint64_t T1SZ_BOOT; } kernelConstant;
-} gSystemInfo;
 }
 
 extern "C" {
@@ -89,9 +84,13 @@ int      control_socket = -1;
 int      rw_socket      = -1;
 
 // 由宿主在启用时调用一次，把 libjailbreak 的内核信息同步过来
+// gSystemInfo = struct system_info { struct { u64 slide; u64 staticBase; u64 base; ... } kernelConstant; ... }
+// 偏移：slide = 0x0, staticBase = 0x8, base = 0x10
 void ds_sync_kernel_info(void) {
-    kernel_base  = gSystemInfo.kernelConstant.base;
-    kernel_slide = gSystemInfo.kernelConstant.slide;
+    if (!g_sysinfo) return;
+    uint8_t *p = (uint8_t *)g_sysinfo;
+    kernel_slide = *(uint64_t *)(p + 0x00);
+    kernel_base  = *(uint64_t *)(p + 0x10);
 }
 
 // ── ds_* 全套实现 ────────────────────────────────────
