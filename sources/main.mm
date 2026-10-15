@@ -123,7 +123,7 @@ static pid_t wz_resolve_pid(const char *arg) {
     return 0;
 }
 
-// --wzscan <pid或名字> <out>：独立扫描 OtherPlayerController
+// --wzscan <pid或名字> <out>：独立扫描 OtherPlayerController（持续模式，写快照）
 static int do_wz_scan(const char *targetArg, const char *outpath) {
     char buf[16384];
     int off = 0;
@@ -138,7 +138,23 @@ static int do_wz_scan(const char *targetArg, const char *outpath) {
         if (pid <= 1) { off += snprintf(buf+off, sizeof(buf)-off, "找不到目标\n"); break; }
         int r = WZReadInit(pid);
         off += snprintf(buf+off, sizeof(buf)-off, "init=%d (%s)\n\n", r, WZReadStatus());
-        WZScanAndReport(buf+off, sizeof(buf)-off);
+
+        // 先做一次全量扫描并报告
+        int cnt = WZScanAndReport(buf+off, sizeof(buf)-off);
+        off = (int)strlen(buf);
+
+        // 持续扫描：每 150ms 更新一次快照，直到被 kill
+        off += snprintf(buf+off, sizeof(buf)-off,
+                        "\n进入持续扫描（每 150ms 更新快照），点「停止绘制」结束\n");
+        FILE *f = fopen(outpath, "w");
+        if (f) { fwrite(buf,1,strlen(buf),f); fclose(f); }
+        int loops = 0;
+        while (loops < 7200) {          // 最多 18 分钟
+            WZWriteSnapshot();
+            loops++;
+            usleep(150000);
+        }
+        return 0;
     } while (0);
     FILE *f = fopen(outpath, "w");
     if (f) { fwrite(buf,1,strlen(buf),f); fclose(f); }

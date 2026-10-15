@@ -58,6 +58,9 @@ int  WZScanOtherPlayers(WZPlayer *out, int maxCount);
 int  WZScanAndReport(char *out, size_t n);
 void WZVerifyAndReport(uint64_t o, char *out, size_t n);
 
+
+int WZWriteSnapshot(void);
+
 // 状态文本
 const char *WZReadStatus(void);
 

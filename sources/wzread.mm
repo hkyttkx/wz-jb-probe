@@ -853,3 +853,26 @@ extern "C" int WZScanAndReport(char *out, size_t n) {
 extern "C" void WZVerifyAndReport(uint64_t o, char *out, size_t n) {
     WZVerifyObj(o, out, n);
 }
+
+// ══════════════════════════════════════════════════════
+//  玩家快照文件（扫描子进程写，UI 进程读，用于绘制）
+// ══════════════════════════════════════════════════════
+#define WZ_SNAP_PATH "/var/mobile/Library/Caches/com.wz.jbprobe.players"
+
+extern "C" int WZWriteSnapshot(void) {
+    static WZPlayer t[128];
+    int n = WZScanOtherPlayers(t, 128);
+
+    FILE *f = fopen(WZ_SNAP_PATH ".tmp", "w");
+    if (!f) return -1;
+    fprintf(f, "%d\n", n);
+    for (int i = 0; i < n; i++) {
+        fprintf(f, "%.1f %.1f %.1f %d %d %d\n",
+                t[i].pos.x, t[i].pos.y, t[i].pos.z,
+                t[i].blood, t[i].headId, t[i].online);
+    }
+    fclose(f);
+    rename(WZ_SNAP_PATH ".tmp", WZ_SNAP_PATH);   // 原子替换
+    os_log(OS_LOG_DEFAULT, "[wzread] 快照写入 %d 个玩家", n);
+    return n;
+}

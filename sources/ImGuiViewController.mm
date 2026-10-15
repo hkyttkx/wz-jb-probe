@@ -42,6 +42,12 @@ static const float kBtnW = 250.0f;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
 @property (nonatomic, strong) NSString *outputText;
 @property (nonatomic, assign) BOOL busy;
+// 内部方法
+- (void)drawESP;
+- (void)drawMenuPanel;
+- (void)drawStartPage;
+- (void)refreshProcs;
+- (void)connectGameAndProbe;
 @end
 
 @implementation ImGuiViewController {
@@ -722,10 +728,13 @@ static const float kBtnW = 250.0f;
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(!_gameConnected || self.busy);
-        if (ImGui::Button("② 读玩家并绘制", ImVec2(half, kBtnH))) {
-            [self runJob:@[ @"--wz", [NSString stringWithUTF8String:_gameName] ]];
+        if (ImGui::Button("② 扫描并绘制", ImVec2(half, kBtnH))) {
+            [self runJobAsync:@[ @"--wzscan", [NSString stringWithUTF8String:_gameName] ]];
         }
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button(_showDraw ? "隐藏框" : "显示框", ImVec2(half, kBtnH)))
+            _showDraw = !_showDraw;
     }
     ImGui::Separator();
 
@@ -782,6 +791,7 @@ static const float kBtnW = 250.0f;
     ImGui_ImplMetal_NewFrame(rpd);
     ImGui::NewFrame();
     [self drawUI];
+    if (_showDraw) [self drawESP];     // ★ ESP 绘制层
     ImGui::Render();
 
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
@@ -789,6 +799,80 @@ static const float kBtnW = 250.0f;
     [enc endEncoding];
     [cb presentDrawable:view.currentDrawable];
     [cb commit];
+}
+
+// ── ESP：读快照文件，把玩家画成方框 ──
+- (void)drawESP {
+    static int   s_n = 0;
+    static float s_px[128], s_py[128], s_pz[128];
+    static int   s_blood[128], s_head[128], s_online[128];
+    static NSTimeInterval s_last = 0;
+    NSTimeInterval now = CACurrentMediaTime();
+
+    if (now - s_last > 0.12) {          // 每 120ms 读一次快照
+        s_last = now;
+        NSString *p = @"/var/mobile/Library/Caches/com.wz.jbprobe.players";
+        NSString *txt = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
+        if (txt.length) {
+            NSArray *lines = [txt componentsSeparatedByString:@"\n"];
+            int n = lines.count ? [lines[0] intValue] : 0;
+            if (n > 128) n = 128;
+            int k = 0;
+            for (int i = 1; i < (int)lines.count && k < n; i++) {
+                NSString *ln = lines[i];
+                if (ln.length < 3) continue;
+                float x=0,y=0,z=0; int b=0,h=0,on=0;
+                if (sscanf(ln.UTF8String, "%f %f %f %d %d %d", &x,&y,&z,&b,&h,&on) == 6) {
+                    s_px[k]=x; s_py[k]=y; s_pz[k]=z;
+                    s_blood[k]=b; s_head[k]=h; s_online[k]=on; k++;
+                }
+            }
+            s_n = k;
+        }
+    }
+    if (s_n <= 0) return;
+
+    // ★ 简易投影：以屏幕中心为原点，按距离缩放
+    //   （完整 MVP 需要相机矩阵，后续升级）
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    ImGuiIO &io = ImGui::GetIO();
+    float W = io.DisplaySize.x, H = io.DisplaySize.y;
+    float cx = W * 0.5f, cy = H * 0.5f;
+    // 用第一个玩家做原点（暂时），后续换成自己坐标
+    float ox = s_px[0], oy = s_py[0], oz = s_pz[0];
+
+    // 右下角状态
+    char info[128];
+    snprintf(info, sizeof(info), "ESP: %d 目标", s_n);
+    dl->AddText(ImVec2(W - 220, 60), IM_COL32(0,255,120,255), info);
+
+    for (int i = 0; i < s_n; i++) {
+        float dx = s_px[i] - ox;
+        float dz = s_pz[i] - oz;
+        float dy = s_py[i] - oy;
+        float dist2 = dx*dx + dz*dz;
+        float dist = sqrtf(dist2);
+        if (dist < 1.0f) continue;                 // 跳过自己
+        // 映射到屏幕（粗略）
+        float sx = cx + dx * 2.0f;
+        float sy = cy - dz * 2.0f;
+        if (sx < 0 || sx > W || sy < 0 || sy > H) continue;
+        float bh = 4000.0f / (dist + 100.0f);      // 距离越近框越大
+        if (bh < 12) bh = 12; if (bh > 200) bh = 200;
+        float bw = bh * 0.55f;
+        // 方框
+        dl->AddRect(ImVec2(sx-bw/2, sy-bh), ImVec2(sx+bw/2, sy),
+                    IM_COL32(0,255,0,220), 0, 0, 2.0f);
+        // 血条
+        float ratio = (s_blood[i] > 0 && s_blood[i] <= 100) ? s_blood[i]/100.0f : 0;
+        dl->AddRectFilled(ImVec2(sx-bw/2-6, sy-bh), ImVec2(sx-bw/2-2, sy),
+                          IM_COL32(0,0,0,180));
+        dl->AddRectFilled(ImVec2(sx-bw/2-6, sy-bh*(1-ratio)), ImVec2(sx-bw/2-2, sy),
+                          IM_COL32(255,50,50,230));
+        // 距离
+        char db[32]; snprintf(db, sizeof(db), "%.0fm", dist);
+        dl->AddText(ImVec2(sx-bw/2, sy+2), IM_COL32(255,255,0,230), db);
+    }
 }
 
 @end
