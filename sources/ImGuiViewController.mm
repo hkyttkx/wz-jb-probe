@@ -857,7 +857,7 @@ static const float kBtnW = 250.0f;
             if (!d || d.length == 0) continue;
             // 直接从二进制里抠出可打印字符串（够用，地址都是 ASCII）
             NSMutableString *sb = [NSMutableString string];
-            const uint8_t *b = d.bytes;
+            const uint8_t *b = (const uint8_t *)d.bytes;
             NSUInteger L = d.length;
             NSMutableData *cur = [NSMutableData data];
             for (NSUInteger i = 0; i < L; i++) {
