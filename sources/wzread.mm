@@ -41,6 +41,12 @@ extern "C" int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int
 #define OFF_PI_HeadId             0x1C
 #define OFF_PI_Blood              0x24
 
+// .NET Dictionary 布局（IL2CPP 与标准 .NET 基本一致）
+#define OFF_DICT_ENTRIES 0x18
+#define OFF_DICT_COUNT   0x20
+#define ENTRY_SIZE       0x18
+#define OFF_ENTRY_VALUE  0x10
+
 static pid_t     g_pid   = 0;
 static uint64_t  g_proc  = 0;
 static task_t    g_task  = MACH_PORT_NULL;
@@ -110,13 +116,15 @@ extern "C" kern_return_t mach_vm_region(vm_map_t target_task,
 
 // ── 找 GameAssembly 的内存区域 ───────────────────────
 typedef struct { uint64_t addr; uint64_t size; } Reg;
-static Reg g_regs[1024];
+#define WZ_MAX_REGIONS 8192
+static Reg g_regs[WZ_MAX_REGIONS];
 static int g_regCount = 0;
+static int g_regTruncated = 0;   // 1=区域数超过上限，表被截断
 
 static void scanRegions(void) {
     g_regCount = 0;
     uint64_t addr = 0;
-    while (addr < 0x0000FFFF00000000ULL && g_regCount < 1024) {
+    while (addr < 0x0000FFFF00000000ULL && g_regCount < WZ_MAX_REGIONS) {
         char path[512] = {0};
         // PROC_PIDREGIONPATHINFO: {r_address, r_size, path...}
         struct { uint64_t address; uint64_t size; char path[1024]; char pad[2]; } ri;
@@ -138,7 +146,7 @@ static void scanRegions(void) {
         }
         g_regs[g_regCount].addr = ri.address;
         g_regs[g_regCount].size = ri.size;
-        g_regCount++;
+        if (++g_regCount >= WZ_MAX_REGIONS) { g_regTruncated = 1; break; }
         addr = ri.address + ri.size;
     }
     snprintf(g_status, sizeof(g_status),
@@ -151,7 +159,7 @@ static void scanRegionsMVM(void) {
     g_regCount = 0;
     if (g_task == MACH_PORT_NULL) { os_log(OS_LOG_DEFAULT, "[wzread] 无 task port"); return; }
     uint64_t addr = 0;
-    while (addr < 0x0000FFFF00000000ULL && g_regCount < 1024) {
+    while (addr < 0x0000FFFF00000000ULL && g_regCount < WZ_MAX_REGIONS) {
         uint64_t size = 0;
         vm_region_basic_info_data_64_t info;
         mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
@@ -167,7 +175,7 @@ static void scanRegionsMVM(void) {
         if ((info.protection & 1) && size >= 0x20000) {
             g_regs[g_regCount].addr = addr;
             g_regs[g_regCount].size = size;
-            g_regCount++;
+            if (++g_regCount >= WZ_MAX_REGIONS) { g_regTruncated = 1; break; }
         }
         addr = next;
     }
@@ -182,8 +190,11 @@ extern "C" void WZReadProbe(char *out, size_t n) {
     int o = 0;
     o += snprintf(out+o, n-o, "pid=%d proc=0x%llx\n", g_pid, g_proc);
     o += snprintf(out+o, n-o, "IL2CPP模块: base=0x%llx size=0x%llx\n", g_ga_base, g_ga_size);
+    o += snprintf(out+o, n-o, "  __TEXT.vm = 0x%llx\n", g_ga_text_vm);
+    o += snprintf(out+o, n-o, "  __DATA    = 0x%llx size=0x%llx\n", g_ga_data_addr, g_ga_data_size);
     o += snprintf(out+o, n-o, "主二进制:  base=0x%llx size=0x%llx\n", g_main_base, g_main_size);
-    o += snprintf(out+o, n-o, "regions(%d):\n", g_regCount);
+    o += snprintf(out+o, n-o, "regions(%d)%s:\n", g_regCount,
+                  g_regTruncated ? " 【已截断!】" : "");
     for (int i = 0; i < g_regCount && i < 60 && o < (int)n - 80; i++) {
         char p[256]={0};
         struct { uint64_t address; uint64_t size; char path[1024]; char pad[2]; } ri;
@@ -193,6 +204,49 @@ extern "C" void WZReadProbe(char *out, size_t n) {
         o += snprintf(out+o, n-o, "  %014llx +%08llx  %s\n",
                       g_regs[i].addr, g_regs[i].size, p);
     }
+
+    // ── Battle.Ins 深度诊断 ──────────────────────────
+    uint64_t bi = WZFindBattleIns();
+    o += snprintf(out+o, n-o, "\n── Battle 诊断 ──\n");
+    o += snprintf(out+o, n-o, "Battle.Ins = 0x%llx\n", bi);
+    if (bi) {
+        o += snprintf(out+o, n-o, "  vtable(= [0])     = 0x%llx\n", rd64(bi + 0x00));
+        o += snprintf(out+o, n-o, "  LoadFinish(0x18)  = 0x%llx\n", rd64(bi + OFF_Battle_LoadFinish));
+        o += snprintf(out+o, n-o, "  SelfPlayer(0x20)  = 0x%llx\n", rd64(bi + OFF_Battle_SelfPlayer));
+        o += snprintf(out+o, n-o, "  MainCamera(0x28)  = 0x%llx\n", rd64(bi + OFF_Battle_MainCamera));
+        o += snprintf(out+o, n-o, "  OtherDic(0x58)    = 0x%llx\n", rd64(bi + OFF_Battle_OtherPlayersDic));
+        o += snprintf(out+o, n-o, "  NearDic(0x60)     = 0x%llx\n", rd64(bi + OFF_Battle_NearPlayersDic));
+        o += snprintf(out+o, n-o, "  TeamDic(0x100)    = 0x%llx\n", rd64(bi + OFF_Battle_TeamPlayerDic));
+        // 原始 dump：前 0x120 字节
+        o += snprintf(out+o, n-o, "  原始 [0x00..0x120):\n");
+        for (uint64_t a = 0; a < 0x120 && o < (int)n - 120; a += 16) {
+            uint64_t v0 = rd64(bi + a), v1 = rd64(bi + a + 8);
+            o += snprintf(out+o, n-o, "    +%03llx: %016llx %016llx\n",
+                          (unsigned long long)a,
+                          (unsigned long long)v0, (unsigned long long)v1);
+        }
+        // 字典内部
+        uint64_t dic = rd64(bi + OFF_Battle_OtherPlayersDic);
+        o += snprintf(out+o, n-o, "  ── 字典 0x%llx ──\n", dic);
+        if (dic && readable(dic)) {
+            o += snprintf(out+o, n-o, "    buckets(0x10) = 0x%llx\n", rd64(dic + 0x10));
+            o += snprintf(out+o, n-o, "    entries(0x18) = 0x%llx\n", rd64(dic + 0x18));
+            o += snprintf(out+o, n-o, "    count  (0x20) = %u\n", rd32(dic + 0x20) & 0x7FFFFFFF);
+            o += snprintf(out+o, n-o, "    ver    (0x28) = %u\n", rd32(dic + 0x28));
+            o += snprintf(out+o, n-o, "    freeL  (0x30) = %u\n", rd32(dic + 0x30));
+            o += snprintf(out+o, n-o, "    freeC  (0x34) = %u\n", rd32(dic + 0x34));
+            o += snprintf(out+o, n-o, "    原始 [0x00..0x50):\n");
+            for (uint64_t a = 0; a < 0x50 && o < (int)n - 120; a += 16) {
+                uint64_t v0 = rd64(dic + a), v1 = rd64(dic + a + 8);
+                o += snprintf(out+o, n-o, "      +%03llx: %016llx %016llx\n",
+                              (unsigned long long)a,
+                              (unsigned long long)v0, (unsigned long long)v1);
+            }
+        }
+    } else {
+        o += snprintf(out+o, n-o, "  (未找到) %s\n", g_status);
+    }
+    o += snprintf(out+o, n-o, "玩家数 = %d\n", WZReadPlayers(NULL, 0));
 }
 
 // ── 初始化 ───────────────────────────────────────────
@@ -233,21 +287,42 @@ extern "C" int WZReadInit(pid_t pid) {
 //  读候选指向的对象，验证 Battle 的字段形态。
 static int checkBattleObj(uint64_t o) {
     if (!looksPtr(o) || !readable(o)) return 0;
+
+    // ★ 铁律 1：IL2CPP 对象的 vtable（首 8 字节）必须落在 IL2CPP 模块范围内。
+    //   这是 Unity 对象最可靠的特征，能滤掉绝大多数野指针误命中。
+    uint64_t vt = rd64(o + 0x00);
+    if (!g_ga_base || vt < g_ga_base || vt >= g_ga_base + g_ga_size) {
+        // 模块信息缺失时不做此校验（避免把真实结果也滤掉）
+        if (g_ga_base && g_ga_size) return 0;
+    }
+
     uint64_t self  = rd64(o + OFF_Battle_SelfPlayer);
     uint64_t cam   = rd64(o + OFF_Battle_MainCamera);
     uint64_t dic   = rd64(o + OFF_Battle_OtherPlayersDic);
     uint64_t team  = rd64(o + OFF_Battle_TeamPlayerDic);
-    // 至少 SelfPlayer / MainCamera / OtherPlayersDic / TeamPlayerDic 里
-    // 有 3 个是合法指针
+
+    // SelfPlayer / MainCamera / OtherPlayersDic 必须是合法且可读的指针
     int ok = 0;
     if (looksPtr(self) && readable(self))  ok++;
     if (looksPtr(cam)  && readable(cam))   ok++;
     if (looksPtr(dic)  && readable(dic))   ok++;
     if (looksPtr(team) && readable(team))  ok++;
+
+    // ★ 铁律 2：OtherPlayersDic 必须是字典形态（entries 指针合法 + count 在合理区间）
+    int dicOK = 0;
+    if (looksPtr(dic) && readable(dic)) {
+        uint64_t ent = rd64(dic + OFF_DICT_ENTRIES);
+        int cnt = (int)(rd32(dic + OFF_DICT_COUNT) & 0x7FFFFFFF);
+        if (looksPtr(ent) && readable(ent) && cnt >= 1 && cnt <= 2048) dicOK = 1;
+    }
+
+    // ★ 铁律 3：LoadFinish 必须是 bool（0 或 1）
     uint8_t lf = 0;
     rd(o + OFF_Battle_LoadFinish, &lf, 1);
-    if (lf > 1) ok -= 2;                 // LoadFinish 应是 bool
-    return ok >= 3;
+    if (lf > 1) ok -= 3;
+
+    // 通过条件：字典形态成立 且 至少 3 个字段合法
+    return dicOK && ok >= 3;
 }
 
 // 通过扫描区域开头找 Mach-O 模块（拿不到路径时的替代）
@@ -299,27 +374,44 @@ static void parseSegments(uint64_t base, uint64_t maxSize) {
 }
 
 static void findModulesByMachO(void) {
+    uint64_t bestAddr = 0, bestSize = 0;
+    uint64_t mainAddr = 0, mainSize = 0;
+
     for (int i = 0; i < g_regCount; i++) {
         uint32_t magic = 0;
         if (rd(g_regs[i].addr, &magic, 4) != 0) continue;
-        if (magic == 0xFEEDFACF || magic == 0xFEEDFACE) {
-            // Mach-O 头 → 读文件类型
-            uint32_t filetype = 0;
-            rd(g_regs[i].addr + 12, &filetype, 4);
-            uint64_t sz = g_regs[i].size;
-            os_log(OS_LOG_DEFAULT, "[wzread] Mach-O @0x%llx size=0x%llx type=%u",
-                   g_regs[i].addr, sz, filetype);
-            // ★ 门槛降到 2MB：UnityFramework 的 __TEXT 段可能不算特大，
-            //   但一定比普通系统库大。真正的判别交给段名解析。
-            if (sz > 0x200000 && !g_ga_base) {
-                g_ga_base = g_regs[i].addr;
-                g_ga_size = sz;
-                parseSegments(g_regs[i].addr, sz);
-                os_log(OS_LOG_DEFAULT, "[wzread] 疑似 IL2CPP 模块 @0x%llx (0x%llx) data=0x%llx",
-                       g_ga_base, g_ga_size, g_ga_data_addr);
-            }
-            if (!g_main_base) { g_main_base = g_regs[i].addr; g_main_size = sz; }
-        }
+        if (magic != 0xFEEDFACF && magic != 0xFEEDFACE) continue;
+
+        uint32_t filetype = 0;
+        rd(g_regs[i].addr + 12, &filetype, 4);
+        uint64_t sz = g_regs[i].size;
+        os_log(OS_LOG_DEFAULT, "[wzread] Mach-O @0x%llx size=0x%llx type=%u",
+               g_regs[i].addr, sz, filetype);
+
+        // 主二进制 = 第一个 Mach-O（通常是 app 可执行文件，加载最早）
+        if (!mainAddr) { mainAddr = g_regs[i].addr; mainSize = sz; }
+
+        // IL2CPP 候选 = 最大的 Mach-O（UnityFramework 113MB 必是最大）
+        if (sz > bestSize) { bestAddr = g_regs[i].addr; bestSize = sz; }
+    }
+
+    if (!g_main_base && mainAddr) { g_main_base = mainAddr; g_main_size = mainSize; }
+
+    // ★ 关键修复：无条件解析段，不再被 !g_ga_base 挡住
+    //   并且只有"最大的 Mach-O"才认定为 IL2CPP 模块
+    if (!g_ga_base && bestAddr && bestSize > 0x200000) {
+        g_ga_base = bestAddr;
+        g_ga_size = bestSize;
+        parseSegments(bestAddr, bestSize);
+        os_log(OS_LOG_DEFAULT,
+               "[wzread] IL2CPP 模块 @0x%llx (0x%llx) __DATA=0x%llx(0x%llx)",
+               g_ga_base, g_ga_size, g_ga_data_addr, g_ga_data_size);
+    } else if (g_ga_base && !g_ga_data_addr) {
+        // g_ga_base 已由 scanRegions 填上，但段信息缺失 —— 补解析
+        parseSegments(g_ga_base, g_ga_size);
+        os_log(OS_LOG_DEFAULT,
+               "[wzread] 补解析段: module=0x%llx __DATA=0x%llx(0x%llx)",
+               g_ga_base, g_ga_data_addr, g_ga_data_size);
     }
 }
 
@@ -403,10 +495,6 @@ extern "C" uint64_t WZFindBattleIns(void) {
 //   +0x04 next     (4)
 //   +0x08 key
 //   +0x10 value
-#define OFF_DICT_ENTRIES 0x18
-#define OFF_DICT_COUNT   0x20
-#define ENTRY_SIZE       0x18
-#define OFF_ENTRY_VALUE  0x10
 
 extern "C" int WZReadPlayers(WZPlayer *out, int maxCount) {
     uint64_t bi = WZFindBattleIns();
@@ -417,7 +505,10 @@ extern "C" int WZReadPlayers(WZPlayer *out, int maxCount) {
 
     uint64_t entries = rd64(dic + OFF_DICT_ENTRIES);
     int count = (int)(rd32(dic + OFF_DICT_COUNT) & 0x7FFFFFFF);
-    if (!looksPtr(entries) || count <= 0 || count > 512) return 0;
+    // 诊断模式（out==NULL）：不读数据，只返回 count，便于 WZReadProbe 展示
+    if (!out) return count;
+    if (!looksPtr(entries) || count <= 0) return 0;
+    if (count > 2048) count = 2048;   // 放宽上限（原 512 太紧）
 
     int n = 0;
     uint8_t eb[ENTRY_SIZE * 8];
