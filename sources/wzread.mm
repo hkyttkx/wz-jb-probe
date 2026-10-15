@@ -51,6 +51,15 @@ static uint64_t  g_ga_size = 0;
 static uint64_t  g_battleIns = 0;    // 找到的 Battle 实例
 static char      g_status[512] = {0};
 
+// IL2CPP 模块的段信息（在 findModulesByMachO 里填充）
+static uint64_t  g_ga_data_addr = 0; // __DATA 实际运行地址
+static uint64_t  g_ga_data_size = 0;
+static uint64_t  g_ga_text_vm   = 0; // __TEXT 的链接时 vmaddr（算 slide 用）
+
+// 前置声明：定义在文件后部（WZReadInit 需要提前引用）
+static void findModulesByMachO(void);
+static void parseSegments(uint64_t base, uint64_t maxSize);
+
 extern "C" const char *WZReadStatus(void) { return g_status; }
 
 // ── 读内存（走 libjailbreak 的 proc_vreadbuf）─────────
@@ -162,12 +171,7 @@ static void scanRegionsMVM(void) {
         }
         addr = next;
     }
-    // 路径信息另查（proc_pidinfo 有就用，没有就算了）
-    for (int i = 0; i < g_regCount; i++) {
-        char path[512] = {0};
-        // 尝试用 sysctl/proc_pidinfo 补路径（失败不影响）
-        (void)path;
-    }
+    // 路径信息由 scanRegions() 补充；跨进程时 proc_pidinfo 通常不返回 path
     snprintf(g_status, sizeof(g_status),
              "pid=%d proc=0x%llx task=%d regions=%d",
              g_pid, g_proc, g_task, g_regCount);
@@ -247,11 +251,6 @@ static int checkBattleObj(uint64_t o) {
 }
 
 // 通过扫描区域开头找 Mach-O 模块（拿不到路径时的替代）
-// ── 记录 UnityFramework 的 __DATA 段（IL2CPP 静态字段在这里）──
-static uint64_t g_ga_data_addr = 0;   // __DATA 实际运行地址
-static uint64_t g_ga_data_size = 0;
-static uint64_t g_ga_text_vm   = 0;   // __TEXT 的链接时 vmaddr（算 slide 用）
-
 // 解析 Mach-O 的 LC_SEGMENT_64，输出 __TEXT/__DATA 的 vmaddr 与 vmsize
 // ★ 注意：只对「已经选定为 IL2CPP 模块」的那个 Mach-O 调用，避免被系统库污染
 static void parseSegments(uint64_t base, uint64_t maxSize) {
