@@ -123,6 +123,48 @@ static pid_t wz_resolve_pid(const char *arg) {
     return 0;
 }
 
+// --wzscan <pid或名字> <out>：独立扫描 OtherPlayerController
+static int do_wz_scan(const char *targetArg, const char *outpath) {
+    char buf[16384];
+    int off = 0;
+    do {
+        if (jb_load() != 0) {
+            off += snprintf(buf+off, sizeof(buf)-off, "jb_load 失败: %s\n", jb_status());
+            break;
+        }
+        jb_init_primitives();
+        pid_t pid = wz_resolve_pid(targetArg);
+        off += snprintf(buf+off, sizeof(buf)-off, "target=%s pid=%d\n", targetArg, pid);
+        if (pid <= 1) { off += snprintf(buf+off, sizeof(buf)-off, "找不到目标\n"); break; }
+        int r = WZReadInit(pid);
+        off += snprintf(buf+off, sizeof(buf)-off, "init=%d (%s)\n\n", r, WZReadStatus());
+        WZScanAndReport(buf+off, sizeof(buf)-off);
+    } while (0);
+    FILE *f = fopen(outpath, "w");
+    if (f) { fwrite(buf,1,strlen(buf),f); fclose(f); }
+    return 0;
+}
+
+// --wzverify <pid或名字> <addr_hex> <out>：验证单个对象地址
+static int do_wz_verify(const char *targetArg, const char *addrHex, const char *outpath) {
+    char buf[8192];
+    int off = 0;
+    do {
+        if (jb_load() != 0) { off += snprintf(buf+off,sizeof(buf)-off,"jb_load 失败\n"); break; }
+        jb_init_primitives();
+        pid_t pid = wz_resolve_pid(targetArg);
+        off += snprintf(buf+off,sizeof(buf)-off,"pid=%d\n", pid);
+        if (pid <= 1) break;
+        WZReadInit(pid);
+        const char *p = strstr(addrHex, "0x");
+        uint64_t a = strtoull(p ? p : addrHex, NULL, 16);
+        WZVerifyAndReport(a, buf+off, sizeof(buf)-off);
+    } while (0);
+    FILE *f = fopen(outpath, "w");
+    if (f) { fwrite(buf,1,strlen(buf),f); fclose(f); }
+    return 0;
+}
+
 static int do_wz_read(const char *targetArg, const char *outpath) {
     char buf[16384];
     int off = 0;
@@ -451,6 +493,14 @@ int main(int argc, char *argv[]) {
         }
         if (argc > 3 && strcmp(argv[1], "--wz") == 0) {
             return do_wz_read(argv[2], argv[3]);
+        }
+        // --wzscan <pid> <out>：独立扫描 OtherPlayerController
+        if (argc > 3 && strcmp(argv[1], "--wzscan") == 0) {
+            return do_wz_scan(argv[2], argv[3]);
+        }
+        // --wzverify <pid> <addr_hex> <out>：验证单个地址
+        if (argc > 4 && strcmp(argv[1], "--wzverify") == 0) {
+            return do_wz_verify(argv[2], argv[3], argv[4]);
         }
         if (argc > 2 && strcmp(argv[1], "--draw") == 0) {
             return do_draw_test(argv[2]);

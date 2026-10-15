@@ -261,20 +261,7 @@ extern "C" void WZReadProbe(char *out, size_t n) {
         o += snprintf(out+o, n-o, "  (未找到) %s\n", g_status);
     }
     o += snprintf(out+o, n-o, "玩家数 = %d\n", WZReadPlayers(NULL, 0));
-
-    // ── OtherPlayerController 直读路线诊断 ──
-    o += snprintf(out+o, n-o, "\n── OtherPlayer 直读 ──\n");
-    {
-        static WZPlayer t[64];
-        int n2 = WZScanOtherPlayers(t, 64);
-        o += snprintf(out+o, n-o, "扫描到 %d 个 OtherPlayerController\n", n2);
-        for (int i = 0; i < n2 && i < 8; i++) {
-            o += snprintf(out+o, n-o,
-                "  #%d obj=0x%llx pos=(%.1f,%.1f,%.1f) blood=%d head=%d online=%d\n",
-                i, t[i].obj, t[i].pos.x, t[i].pos.y, t[i].pos.z,
-                t[i].blood, t[i].headId, t[i].online);
-        }
-    }
+    o += snprintf(out+o, n-o, "(OtherPlayer 扫描请用「扫描玩家」按钮)\n");
 }
 
 // ── 初始化 ───────────────────────────────────────────
@@ -776,34 +763,55 @@ extern "C" int WZVerifyObj(uint64_t o, char *out, size_t n) {
 }
 
 // 扫描托管堆找所有 OtherPlayerController
+// ★ 优化：只扫 g_regs 里真实存在的映射区域，不盲扫空洞
 extern "C" int WZScanOtherPlayers(WZPlayer *out, int maxCount) {
     int n = 0;
 
-    // ① 先用手动列表（优先）
+    // ① 先用手动列表（优先，O(1) 完成）
     for (int i = 0; i < g_manualObjCount && n < maxCount; i++) {
         if (zIsOtherPlayerObj(g_manualObjs[i]))
             zPlayerFromObj(g_manualObjs[i], &out[n++]);
     }
-    if (n > 0) return n;
+    if (n > 0) {
+        os_log(OS_LOG_DEFAULT, "[wzread] 手动列表命中 %d 个", n);
+        return n;
+    }
 
-    // ② 扫描托管堆范围（OtherPlayerController 实测在 0x16xxxxxxx ~ 0x17xxxxxxx）
-    const uint64_t ranges[][2] = {
-        { 0x160000000ULL, 0x10000000ULL },   // 0x160000000 - 0x170000000
-        { 0x170000000ULL, 0x10000000ULL },   // 0x170000000 - 0x180000000
-    };
-    uint8_t blk[0x1000];
-    for (int r = 0; r < 2 && n < maxCount; r++) {
-        uint64_t start = ranges[r][0], len = ranges[r][1];
-        uint64_t end = start + len;
-        for (uint64_t a = start; a + 8 <= end && n < maxCount; a += sizeof(blk)) {
+    // ② 从 g_regs 里筛出「托管堆候选」区域：
+    //    地址落在 0x160000000~0x180000000，且大小 < 64MB（大堆通常是若干中等区域）
+    #define HEAP_LO 0x160000000ULL
+    #define HEAP_HI 0x180000000ULL
+    #define SCAN_BUDGET_BYTES (64ULL*1024*1024)   // ★ 总预算 64MB，防卡死
+    int scanned = 0;
+    uint64_t totalBytes = 0;
+    static uint8_t blk[0x8000];          // 32KB 块读
+
+    for (int r = 0; r < g_regCount && n < maxCount; r++) {
+        if (totalBytes >= SCAN_BUDGET_BYTES) break;      // ★ 预算用尽即停
+        uint64_t a = g_regs[r].addr, sz = g_regs[r].size;
+        uint64_t lo = (a > HEAP_LO) ? a : HEAP_LO;
+        uint64_t hi = (a + sz < HEAP_HI) ? (a + sz) : HEAP_HI;
+        if (lo >= hi) continue;
+        uint64_t len = hi - lo;
+        if (len < 0x1000) continue;
+        if (len > 0x1000000) len = 0x1000000;            // 单区域最多 16MB
+        if (totalBytes + len > SCAN_BUDGET_BYTES)
+            len = SCAN_BUDGET_BYTES - totalBytes;        // 按剩余预算裁剪
+
+        totalBytes += len;
+        scanned++;
+
+        uint64_t end = lo + len;
+        for (uint64_t p = lo; p + 8 <= end && n < maxCount; p += sizeof(blk)) {
             size_t want = sizeof(blk);
-            if (a + want > end) want = (size_t)(end - a);
-            if (rd(a, blk, want) != 0) continue;   // 整块不可读就跳过（不 break）
+            if (p + want > end) want = (size_t)(end - p);
+            if (rd(p, blk, want) != 0) continue;
             for (size_t off = 0; off + 8 <= want && n < maxCount; off += 8) {
                 uint64_t cand = *(uint64_t *)(blk + off);
-                if (!looksPtr(cand)) continue;
+                if (cand < HEAP_LO || cand >= HEAP_HI) continue;
+                if (cand & 7) continue;
+                if (rd(cand, blk, 8) != 0) continue;
                 if (!zIsOtherPlayerObj(cand)) continue;
-                // 去重
                 int dup = 0;
                 for (int k = 0; k < n; k++) if (out[k].obj == cand) { dup = 1; break; }
                 if (dup) continue;
@@ -811,6 +819,37 @@ extern "C" int WZScanOtherPlayers(WZPlayer *out, int maxCount) {
             }
         }
     }
-    os_log(OS_LOG_DEFAULT, "[wzread] 扫描到 %d 个 OtherPlayerController", n);
+    os_log(OS_LOG_DEFAULT, "[wzread] 扫描 %d 区域 / %llu MB -> %d 个对象",
+           scanned, totalBytes/1024/1024, n);
+    snprintf(g_status, sizeof(g_status), "扫描 %d 区域/%lluMB -> %d 个",
+             scanned, totalBytes/1024/1024, n);
     return n;
+}
+
+// ── 独立扫描命令：输出扫描结果到文本 ──
+extern "C" int WZScanAndReport(char *out, size_t n) {
+    int o = 0;
+    static WZPlayer t[64];
+    uint64_t t0 = mach_absolute_time();
+    int cnt = WZScanOtherPlayers(t, 64);
+    uint64_t t1 = mach_absolute_time();
+
+    o += snprintf(out+o, n-o, "扫描用时 = %llu ms\n", (t1-t0)/1000000ULL);
+    o += snprintf(out+o, n-o, "扫描到 %d 个 OtherPlayerController\n\n", cnt);
+    for (int i = 0; i < cnt && i < 32 && o < (int)n-200; i++) {
+        o += snprintf(out+o, n-o,
+            "#%d obj=0x%llx\n   pos=(%.1f, %.1f, %.1f)\n   blood=%d head=%d online=%d rebirth=%d dun=%d\n",
+            i, t[i].obj, t[i].pos.x, t[i].pos.y, t[i].pos.z,
+            t[i].blood, t[i].headId, t[i].online, t[i].rebirthTime, t[i].isDun);
+    }
+    if (cnt == 0) {
+        o += snprintf(out+o, n-o, "%s\n", WZReadStatus());
+        o += snprintf(out+o, n-o, "提示: 可用「验证地址」功能单独验证工具读到的真值\n");
+    }
+    return cnt;
+}
+
+// ── 验证真值地址并输出 ──
+extern "C" void WZVerifyAndReport(uint64_t o, char *out, size_t n) {
+    WZVerifyObj(o, out, n);
 }
