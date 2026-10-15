@@ -123,41 +123,47 @@ static pid_t wz_resolve_pid(const char *arg) {
     return 0;
 }
 
-// --wzscan <pid或名字> <out>：独立扫描 OtherPlayerController（持续模式，写快照）
+// --wzscan <pid或名字> <out>：扫描 OtherPlayerController
+//   ★ 先跑一次扫描并立刻写报告（你能马上看到结果），再进入后台持续更新快照
 static int do_wz_scan(const char *targetArg, const char *outpath) {
     char buf[16384];
     int off = 0;
-    do {
-        if (jb_load() != 0) {
-            off += snprintf(buf+off, sizeof(buf)-off, "jb_load 失败: %s\n", jb_status());
-            break;
-        }
-        jb_init_primitives();
-        pid_t pid = wz_resolve_pid(targetArg);
-        off += snprintf(buf+off, sizeof(buf)-off, "target=%s pid=%d\n", targetArg, pid);
-        if (pid <= 1) { off += snprintf(buf+off, sizeof(buf)-off, "找不到目标\n"); break; }
-        int r = WZReadInit(pid);
-        off += snprintf(buf+off, sizeof(buf)-off, "init=%d (%s)\n\n", r, WZReadStatus());
 
-        // 先做一次全量扫描并报告
-        int cnt = WZScanAndReport(buf+off, sizeof(buf)-off);
-        off = (int)strlen(buf);
-
-        // 持续扫描：每 150ms 更新一次快照，直到被 kill
-        off += snprintf(buf+off, sizeof(buf)-off,
-                        "\n进入持续扫描（每 150ms 更新快照），点「停止绘制」结束\n");
-        FILE *f = fopen(outpath, "w");
-        if (f) { fwrite(buf,1,strlen(buf),f); fclose(f); }
-        int loops = 0;
-        while (loops < 7200) {          // 最多 18 分钟
-            WZWriteSnapshot();
-            loops++;
-            usleep(150000);
-        }
+    if (jb_load() != 0) {
+        off += snprintf(buf+off, sizeof(buf)-off, "jb_load 失败: %s\n", jb_status());
+        FILE *f = fopen(outpath, "w"); if (f) { fwrite(buf,1,strlen(buf),f); fclose(f); }
         return 0;
-    } while (0);
+    }
+    jb_init_primitives();
+    pid_t pid = wz_resolve_pid(targetArg);
+    off += snprintf(buf+off, sizeof(buf)-off, "target=%s pid=%d\n", targetArg, pid);
+    if (pid <= 1) {
+        off += snprintf(buf+off, sizeof(buf)-off, "找不到目标\n");
+        FILE *f = fopen(outpath, "w"); if (f) { fwrite(buf,1,strlen(buf),f); fclose(f); }
+        return 0;
+    }
+    int r = WZReadInit(pid);
+    off += snprintf(buf+off, sizeof(buf)-off, "init=%d (%s)\n\n", r, WZReadStatus());
+
+    // ① 立即做一次扫描（有界预算），把结果写报告
+    off += snprintf(buf+off, sizeof(buf)-off, "===== 首次扫描 =====\n");
+    WZScanAndReport(buf+off, sizeof(buf)-off);
+    off = (int)strlen(buf);
+    off += snprintf(buf+off, sizeof(buf)-off,
+                    "\n===== 快照已更新，游戏画面看方框 =====\n");
+
     FILE *f = fopen(outpath, "w");
     if (f) { fwrite(buf,1,strlen(buf),f); fclose(f); }
+
+    // ② 首次快照（给 ESP 用）
+    WZWriteSnapshot();
+
+    // ③ 后台持续更新快照（轻量：只重扫一次就走）
+    //    ★ 每轮之间 sleep，避免 CPU 打满
+    for (int loops = 0; loops < 3600; loops++) {
+        usleep(200000);              // 200ms
+        WZWriteSnapshot();
+    }
     return 0;
 }
 
@@ -178,6 +184,39 @@ static int do_wz_verify(const char *targetArg, const char *addrHex, const char *
     } while (0);
     FILE *f = fopen(outpath, "w");
     if (f) { fwrite(buf,1,strlen(buf),f); fclose(f); }
+    return 0;
+}
+
+// --wzcalib <pid或名字> <out>：导入地址 -> 标定 class -> 读玩家 -> 写快照
+static int do_wz_calib(const char *targetArg, const char *outpath) {
+    char buf[16384];
+    int off = 0;
+    if (jb_load() != 0) {
+        off += snprintf(buf+off, sizeof(buf)-off, "jb_load 失败: %s\n", jb_status());
+        FILE *f = fopen(outpath,"w"); if (f){fwrite(buf,1,strlen(buf),f);fclose(f);}
+        return 0;
+    }
+    jb_init_primitives();
+    pid_t pid = wz_resolve_pid(targetArg);
+    off += snprintf(buf+off, sizeof(buf)-off, "target=%s pid=%d\n", targetArg, pid);
+    if (pid <= 1) {
+        off += snprintf(buf+off, sizeof(buf)-off, "找不到目标\n");
+        FILE *f = fopen(outpath,"w"); if (f){fwrite(buf,1,strlen(buf),f);fclose(f);}
+        return 0;
+    }
+    int r = WZReadInit(pid);
+    off += snprintf(buf+off, sizeof(buf)-off, "init=%d (%s)\n\n", r, WZReadStatus());
+    WZCalibAndReport(buf+off, sizeof(buf)-off);
+    off = (int)strlen(buf);
+    off += snprintf(buf+off, sizeof(buf)-off, "\n===== 已写入快照，游戏画面看方框 =====\n");
+
+    FILE *f = fopen(outpath,"w"); if (f){fwrite(buf,1,strlen(buf),f);fclose(f);}
+
+    // 持续刷新快照（每 200ms）
+    for (int loops = 0; loops < 3600; loops++) {
+        usleep(200000);
+        WZWriteSnapshot();
+    }
     return 0;
 }
 
@@ -517,6 +556,10 @@ int main(int argc, char *argv[]) {
         // --wzverify <pid> <addr_hex> <out>：验证单个地址
         if (argc > 4 && strcmp(argv[1], "--wzverify") == 0) {
             return do_wz_verify(argv[2], argv[3], argv[4]);
+        }
+        // --wzcalib <pid> <out>：标定并绘制
+        if (argc > 3 && strcmp(argv[1], "--wzcalib") == 0) {
+            return do_wz_calib(argv[2], argv[3]);
         }
         if (argc > 2 && strcmp(argv[1], "--draw") == 0) {
             return do_draw_test(argv[2]);

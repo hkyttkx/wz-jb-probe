@@ -48,6 +48,7 @@ static const float kBtnW = 250.0f;
 - (void)drawStartPage;
 - (void)refreshProcs;
 - (void)connectGameAndProbe;
+- (void)importObjsFromPasteboard;
 @end
 
 @implementation ImGuiViewController {
@@ -736,6 +737,16 @@ static const float kBtnW = 250.0f;
         if (ImGui::Button(_showDraw ? "隐藏框" : "显示框", ImVec2(half, kBtnH)))
             _showDraw = !_showDraw;
     }
+    {
+        float half = (pw - 40.0f) * 0.5f - 4.0f;
+        if (ImGui::Button("③ 导入剪贴板地址", ImVec2(half, kBtnH))) {
+            [self importObjsFromPasteboard];
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("④ 标定并绘制", ImVec2(half, kBtnH)) && _gameConnected) {
+            [self runJobAsync:@[ @"--wzcalib", [NSString stringWithUTF8String:_gameName] ]];
+        }
+    }
     ImGui::Separator();
 
     ImGui::Separator();
@@ -799,6 +810,53 @@ static const float kBtnW = 250.0f;
     [enc endEncoding];
     [cb presentDrawable:view.currentDrawable];
     [cb commit];
+}
+
+// ── 从剪贴板导入地址 ──
+//   兼容各种格式：只要文本里出现 0x开头的16位以上十六进制数，就提取
+- (void)importObjsFromPasteboard {
+    NSString *txt = [UIPasteboard generalPasteboard].string;
+    if (txt.length == 0) {
+        self.outputText = @"剪贴板为空\n\n请在 U3D 工具里点「复制地址」，再点本按钮。";
+        return;
+    }
+
+    NSMutableArray<NSString *> *addrs = [NSMutableArray array];
+    // 用正则扫所有 0x 开头的十六进制串
+    NSError *err = nil;
+    NSRegularExpression *re =
+        [NSRegularExpression regularExpressionWithPattern:@"0[xX][0-9a-fA-F]{8,16}"
+                                                  options:0 error:&err];
+    if (re) {
+        NSArray *ms = [re matchesInString:txt options:0 range:NSMakeRange(0, txt.length)];
+        for (NSTextCheckingResult *m in ms) {
+            NSString *hex = [txt substringWithRange:m.range];
+            // 只保留像用户态指针的（>=0x100000000）
+            unsigned long long v = strtoull(hex.UTF8String, NULL, 16);
+            if (v >= 0x100000000ULL) [addrs addObject:hex];
+        }
+    }
+
+    if (addrs.count == 0) {
+        self.outputText = [NSString stringWithFormat:
+            @"剪贴板里没找到地址。\n\n原文前200字：\n%@",
+            [txt substringToIndex:MIN((NSUInteger)200, txt.length)]];
+        return;
+    }
+
+    // 去重
+    NSMutableArray *uniq = [NSMutableArray array];
+    for (NSString *a in addrs) if (![uniq containsObject:a]) [uniq addObject:a];
+
+    // 写文件
+    NSString *path = @"/var/mobile/Library/Caches/com.wz.jbprobe.objs";
+    [[uniq componentsJoinedByString:@"\n"] writeToFile:path atomically:YES
+                                              encoding:NSUTF8StringEncoding error:nil];
+
+    self.outputText = [NSString stringWithFormat:
+        @"已导入 %lu 个地址：\n%@\n\n写入 %@\n\n下一步：点「④ 标定并绘制」",
+        (unsigned long)uniq.count,
+        [uniq componentsJoinedByString:@"\n"], path];
 }
 
 // ── ESP：读快照文件，把玩家画成方框 ──

@@ -61,6 +61,18 @@ void WZVerifyAndReport(uint64_t o, char *out, size_t n);
 
 int WZWriteSnapshot(void);
 
+
+int WZLoadObjsFromFile(void);
+
+
+// vtable 标定（从工具读到的地址反推 Il2CppClass*）
+int      WZCalibrateFromObjs(void);
+uint64_t WZGetOpcClass(void);
+void     WZSetOpcClass(uint64_t c);
+
+
+int WZCalibAndReport(char *out, size_t n);
+
 // 状态文本
 const char *WZReadStatus(void);
 

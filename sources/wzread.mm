@@ -75,6 +75,11 @@ static void parseSegments(uint64_t base, uint64_t maxSize);
 
 extern "C" const char *WZReadStatus(void) { return g_status; }
 
+// 前置声明（定义在文件后部，顶部需要引用）
+static int zIsOtherPlayerObj(uint64_t o);
+static int zPlayerFromObj(uint64_t o, WZPlayer *p);
+static int zIsOtherPlayerObjFast(uint64_t o);
+
 // ── 读内存（走 libjailbreak 的 proc_vreadbuf）─────────
 extern "C" int mach_vm_read_overwrite(vm_map_t, uint64_t, uint64_t, uint64_t, uint64_t *);
 
@@ -294,6 +299,16 @@ extern "C" int WZReadInit(pid_t pid) {
     snprintf(g_status, sizeof(g_status),
              "ok GA=0x%llx(0x%llx) data=0x%llx regions=%d",
              g_ga_base, g_ga_size, g_ga_data_addr, g_regCount);
+
+    // ★ 自动导入地址文件（UI 从剪贴板写入），有则优先用
+    {
+        int imp = WZLoadObjsFromFile();
+        if (imp > 0) {
+            os_log(OS_LOG_DEFAULT, "[wzread] 已导入 %d 个手动地址", imp);
+            // 用这些地址标定 OtherPlayerController 的 Il2CppClass*
+            WZCalibrateFromObjs();
+        }
+    }
     return 0;
 }
 
@@ -339,6 +354,55 @@ static int zPlayerFromObj(uint64_t o, WZPlayer *p) {
 
 // ── 判定候选 O 是否为 OtherPlayerController 对象 ──
 // 依据 dump.cs 的真实字段布局
+// ── vtable 标定：OtherPlayerController 的 Il2CppClass* ──
+//   原理：IL2CPP 对象的 vtable[0] 就是它的 Il2CppClass*。
+//   同一次运行里所有 OtherPlayerController 实例的这个值完全相同。
+//   一旦标定，就能用它精准匹配，不用再靠字段形态猜。
+static uint64_t g_opcClass = 0;
+
+extern "C" int WZCalibrateFromObjs(void) {
+    // 从 g_manualObjs 里读 vtable[0]，投票选出出现次数最多的值
+    if (g_manualObjCount <= 0) return -1;
+
+    uint64_t votes[64] = {0};
+    int counts[64] = {0};
+    int nv = 0;
+    for (int i = 0; i < g_manualObjCount; i++) {
+        uint64_t vt = rd64(g_manualObjs[i]);
+        if (vt < 0x100000000ULL) continue;
+        int found = 0;
+        for (int k = 0; k < nv; k++) {
+            if (votes[k] == vt) { counts[k]++; found = 1; break; }
+        }
+        if (!found && nv < 64) { votes[nv] = vt; counts[nv] = 1; nv++; }
+    }
+
+    int best = -1, bestC = 0;
+    for (int k = 0; k < nv; k++) {
+        if (counts[k] > bestC) { bestC = counts[k]; best = k; }
+    }
+    if (best < 0 || bestC < 1) return -1;
+
+    g_opcClass = votes[best];
+    os_log(OS_LOG_DEFAULT, "[wzread] ★ 标定 OtherPlayerController class = 0x%llx (命中 %d/%d)",
+           g_opcClass, bestC, g_manualObjCount);
+    snprintf(g_status, sizeof(g_status), "标定 class=0x%llx (%d/%d)",
+             g_opcClass, bestC, g_manualObjCount);
+    return 0;
+}
+
+extern "C" uint64_t WZGetOpcClass(void) { return g_opcClass; }
+extern "C" void WZSetOpcClass(uint64_t c) { g_opcClass = c; }
+
+// ── 判定候选 O 是否为 OtherPlayerController ──
+//   有标定时：只看 vtable（极快极准）
+//   无标定时：回退到字段形态判定
+static int zIsOtherPlayerObjFast(uint64_t o) {
+    if (!g_opcClass) return zIsOtherPlayerObj(o);
+    uint64_t vt = rd64(o);
+    return vt == g_opcClass;
+}
+
 static int zIsOtherPlayerObj(uint64_t o) {
     if (!looksPtr(o) || !readable(o)) return 0;
 
@@ -777,26 +841,28 @@ extern "C" int WZScanOtherPlayers(WZPlayer *out, int maxCount) {
         return n;
     }
 
-    // ② 从 g_regs 里筛出「托管堆候选」区域：
-    //    地址落在 0x160000000~0x180000000，且大小 < 64MB（大堆通常是若干中等区域）
+    // ② 扫描托管堆
     #define HEAP_LO 0x160000000ULL
     #define HEAP_HI 0x180000000ULL
-    #define SCAN_BUDGET_BYTES (64ULL*1024*1024)   // ★ 总预算 64MB，防卡死
+    #define SCAN_BUDGET_BYTES (32ULL*1024*1024)   // 总预算 32MB
     int scanned = 0;
     uint64_t totalBytes = 0;
     static uint8_t blk[0x8000];          // 32KB 块读
 
+    // 统计用
+    int candTotal = 0, candVtOK = 0;
+
     for (int r = 0; r < g_regCount && n < maxCount; r++) {
-        if (totalBytes >= SCAN_BUDGET_BYTES) break;      // ★ 预算用尽即停
+        if (totalBytes >= SCAN_BUDGET_BYTES) break;
         uint64_t a = g_regs[r].addr, sz = g_regs[r].size;
         uint64_t lo = (a > HEAP_LO) ? a : HEAP_LO;
         uint64_t hi = (a + sz < HEAP_HI) ? (a + sz) : HEAP_HI;
         if (lo >= hi) continue;
         uint64_t len = hi - lo;
         if (len < 0x1000) continue;
-        if (len > 0x1000000) len = 0x1000000;            // 单区域最多 16MB
+        if (len > 0x1000000) len = 0x1000000;
         if (totalBytes + len > SCAN_BUDGET_BYTES)
-            len = SCAN_BUDGET_BYTES - totalBytes;        // 按剩余预算裁剪
+            len = SCAN_BUDGET_BYTES - totalBytes;
 
         totalBytes += len;
         scanned++;
@@ -806,16 +872,36 @@ extern "C" int WZScanOtherPlayers(WZPlayer *out, int maxCount) {
             size_t want = sizeof(blk);
             if (p + want > end) want = (size_t)(end - p);
             if (rd(p, blk, want) != 0) continue;
-            for (size_t off = 0; off + 8 <= want && n < maxCount; off += 8) {
-                uint64_t cand = *(uint64_t *)(blk + off);
-                if (cand < HEAP_LO || cand >= HEAP_HI) continue;
-                if (cand & 7) continue;
-                if (rd(cand, blk, 8) != 0) continue;
-                if (!zIsOtherPlayerObj(cand)) continue;
+
+            // 第一遍：纯本地筛选，收集候选地址（不发 syscall）
+            static uint64_t cands[256];
+            int nc = 0;
+            for (size_t off = 0; off + 8 <= want && nc < 256; off += 8) {
+                uint64_t c = *(uint64_t *)(blk + off);
+                if (c < HEAP_LO || c >= HEAP_HI) continue;
+                if (c & 7) continue;
+                cands[nc++] = c;
+                candTotal++;
+            }
+            if (nc == 0) continue;
+
+            // 第二遍：批量读候选对象的 vtable（8 字节），一次性验证
+            //   vtable 必须在 IL2CPP 模块范围内 —— 这一步能滤掉 99.99%
+            for (int i = 0; i < nc && n < maxCount; i++) {
+                uint64_t c = cands[i];
+                if (rd(c, blk, 8) != 0) continue;
+                uint64_t vt = *(uint64_t *)blk;
+                if (g_ga_base && g_ga_size) {
+                    if (vt < g_ga_base || vt >= g_ga_base + g_ga_size) continue;
+                } else {
+                    if (vt < 0x100000000ULL || (vt & 7)) continue;
+                }
+                candVtOK++;
+                if (!zIsOtherPlayerObjFast(c)) continue;
                 int dup = 0;
-                for (int k = 0; k < n; k++) if (out[k].obj == cand) { dup = 1; break; }
+                for (int k = 0; k < n; k++) if (out[k].obj == c) { dup = 1; break; }
                 if (dup) continue;
-                if (zPlayerFromObj(cand, &out[n])) n++;
+                if (zPlayerFromObj(c, &out[n])) n++;
             }
         }
     }
@@ -875,4 +961,78 @@ extern "C" int WZWriteSnapshot(void) {
     rename(WZ_SNAP_PATH ".tmp", WZ_SNAP_PATH);   // 原子替换
     os_log(OS_LOG_DEFAULT, "[wzread] 快照写入 %d 个玩家", n);
     return n;
+}
+
+// ══════════════════════════════════════════════════════
+//  地址文件导入（UI 写，子进程读）
+//  文件格式：每行一个十六进制地址，例如
+//     0x169ee9a80
+//     0x169e75540
+// ══════════════════════════════════════════════════════
+#define WZ_OBJS_PATH "/var/mobile/Library/Caches/com.wz.jbprobe.objs"
+
+extern "C" int WZLoadObjsFromFile(void) {
+    FILE *f = fopen(WZ_OBJS_PATH, "r");
+    if (!f) return -1;
+    g_manualObjCount = 0;
+    char line[256];
+    while (fgets(line, sizeof(line), f) && g_manualObjCount < 64) {
+        char *p = strstr(line, "0x");
+        if (!p) p = strstr(line, "0X");
+        if (!p) continue;
+        uint64_t v = strtoull(p, NULL, 16);
+        if (v < 0x100000000ULL) continue;
+        g_manualObjs[g_manualObjCount++] = v;
+    }
+    fclose(f);
+    os_log(OS_LOG_DEFAULT, "[wzread] 从文件导入 %d 个地址", g_manualObjCount);
+    return g_manualObjCount;
+}
+
+// ── 标定 + 报告（供 --wzcalib 用）──
+extern "C" int WZCalibAndReport(char *out, size_t n) {
+    int o = 0;
+    int imp = WZLoadObjsFromFile();
+    o += snprintf(out+o, n-o, "导入地址 = %d 个\n", imp);
+    if (imp <= 0) {
+        o += snprintf(out+o, n-o, "地址文件为空，请先点「③ 导入剪贴板地址」\n");
+        return -1;
+    }
+    // 列出导入的地址 + 各自的 vtable
+    o += snprintf(out+o, n-o, "\n导入的地址及 vtable[0]：\n");
+    for (int i = 0; i < g_manualObjCount && i < 16 && o < (int)n-160; i++) {
+        uint64_t vt = rd64(g_manualObjs[i]);
+        o += snprintf(out+o, n-o, "  0x%llx -> vt=0x%llx %s\n",
+                      g_manualObjs[i], vt,
+                      (g_ga_base && vt >= g_ga_base && vt < g_ga_base+g_ga_size) ? "(模块内)" : "");
+    }
+    // 标定
+    if (WZCalibrateFromObjs() != 0) {
+        o += snprintf(out+o, n-o, "\n标定失败：没有可用的 vtable\n");
+        return -2;
+    }
+    o += snprintf(out+o, n-o, "\n★ 标定成功 OtherPlayerController.class = 0x%llx\n", WZGetOpcClass());
+
+    // 用标定值验证每个地址
+    o += snprintf(out+o, n-o, "\n验证各地址（用 vtable 匹配）：\n");
+    int okc = 0;
+    for (int i = 0; i < g_manualObjCount && i < 16 && o < (int)n-200; i++) {
+        uint64_t a = g_manualObjs[i];
+        int is = zIsOtherPlayerObjFast(a);
+        WZPlayer p;
+        if (is && zPlayerFromObj(a, &p)) {
+            okc++;
+            o += snprintf(out+o, n-o,
+                "  0x%llx ✓ pos=(%.1f,%.1f,%.1f) blood=%d head=%d online=%d\n",
+                a, p.pos.x, p.pos.y, p.pos.z, p.blood, p.headId, p.online);
+        } else {
+            o += snprintf(out+o, n-o, "  0x%llx × 不匹配\n", a);
+        }
+    }
+    o += snprintf(out+o, n-o, "\n有效 = %d / %d\n", okc, g_manualObjCount);
+
+    // 写快照
+    int sn = WZWriteSnapshot();
+    o += snprintf(out+o, n-o, "快照写入 = %d 个玩家\n", sn);
+    return okc;
 }
