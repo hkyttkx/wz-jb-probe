@@ -75,6 +75,7 @@ static const float kBtnW = 250.0f;
     char _gameName[64];   // 游戏进程名（默认 sc）
     int  _gamePid;        // 连接到的 pid
     BOOL _gameConnected;
+    char _addrBuf[2048];   // 手动输入的地址文本
 }
 
 - (void)viewDidLoad {
@@ -103,6 +104,7 @@ static const float kBtnW = 250.0f;
     _gamePid = 0;
     _gameConnected = NO;
     _hasPanelPos = NO;
+    _addrBuf[0] = 0;
     {
         NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
         float sc = [ud floatForKey:@"WZMenuScale"];
@@ -747,6 +749,26 @@ static const float kBtnW = 250.0f;
             [self runJobAsync:@[ @"--wzcalib", [NSString stringWithUTF8String:_gameName] ]];
         }
     }
+    ImGui::TextDisabled("手动输入地址（每行一个 0x...）:");
+    ImGui::InputTextMultiline("##addrs", _addrBuf, sizeof(_addrBuf),
+                              ImVec2(pw - 40.0f, 90.0f));
+    if (ImGui::Button("保存地址", ImVec2(140, kBtnH - 20))) {
+        NSString *path = @"/var/mobile/Library/Caches/com.wz.jbprobe.objs";
+        NSString *t = [NSString stringWithUTF8String:_addrBuf];
+        [t writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        self.outputText = [NSString stringWithFormat:@"已保存地址到 %@\n%@", path, t];
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("从剪贴板贴入", ImVec2(160, kBtnH - 20))) {
+        NSString *t = nil;
+        @try { t = [UIPasteboard generalPasteboard].string; } @catch (...) {}
+        if (t.length) {
+            strlcpy(_addrBuf, t.UTF8String, sizeof(_addrBuf));
+            self.outputText = @"已从剪贴板贴入，点「保存地址」生效";
+        } else {
+            self.outputText = @"剪贴板读不到，请手动长按输入框粘贴";
+        }
+    }
     ImGui::Separator();
 
     ImGui::Separator();
@@ -813,16 +835,61 @@ static const float kBtnW = 250.0f;
 }
 
 // ── 从剪贴板导入地址 ──
-//   兼容各种格式：只要文本里出现 0x开头的16位以上十六进制数，就提取
+//   HUD 跑在 root 进程，UIPasteboard 拿不到系统剪贴板，
+//   所以直接读 iOS 的剪贴板 SQLite 数据库。
 - (void)importObjsFromPasteboard {
-    NSString *txt = [UIPasteboard generalPasteboard].string;
+    NSString *txt = nil;
+
+    // ① 先试常规 UIPasteboard（App 进程下有效）
+    @try { txt = [UIPasteboard generalPasteboard].string; } @catch (...) { txt = nil; }
+
+    // ② 失败则直接读剪贴板数据库（root 权限可读）
     if (txt.length == 0) {
-        self.outputText = @"剪贴板为空\n\n请在 U3D 工具里点「复制地址」，再点本按钮。";
+        NSArray *cands = @[
+            @"/var/mobile/Library/Caches/com.apple.Pasteboard/pasteboard.db",
+            @"/var/mobile/Library/Caches/com.apple.pasteboard/pasteboard.db",
+            @"/private/var/mobile/Library/Caches/com.apple.Pasteboard/pasteboard.db",
+            @"/var/mobile/Library/Preferences/com.apple.Pasteboard.plist",
+        ];
+        for (NSString *p in cands) {
+            if (![[NSFileManager defaultManager] fileExistsAtPath:p]) continue;
+            NSData *d = [NSData dataWithContentsOfFile:p];
+            if (!d || d.length == 0) continue;
+            // 直接从二进制里抠出可打印字符串（够用，地址都是 ASCII）
+            NSMutableString *sb = [NSMutableString string];
+            const uint8_t *b = d.bytes;
+            NSUInteger L = d.length;
+            NSMutableData *cur = [NSMutableData data];
+            for (NSUInteger i = 0; i < L; i++) {
+                uint8_t c = b[i];
+                if (c >= 0x20 && c < 0x7F) [cur appendBytes:&c length:1];
+                else {
+                    if (cur.length >= 4) {
+                        NSString *s = [[NSString alloc] initWithData:cur encoding:NSUTF8StringEncoding];
+                        if (s) [sb appendString:s];
+                        [sb appendString:@"\n"];
+                    }
+                    [cur setLength:0];
+                }
+            }
+            if (cur.length >= 4) {
+                NSString *s = [[NSString alloc] initWithData:cur encoding:NSUTF8StringEncoding];
+                if (s) [sb appendString:s];
+            }
+            if (sb.length > 0) {
+                txt = sb;
+                self.outputText = [NSString stringWithFormat:@"从 %@ 读到剪贴板内容", p];
+                break;
+            }
+        }
+    }
+
+    if (txt.length == 0) {
+        self.outputText = @"读不到剪贴板。\n\n请改用「手动输入地址」按钮，把地址逐行粘贴进去。";
         return;
     }
 
     NSMutableArray<NSString *> *addrs = [NSMutableArray array];
-    // 用正则扫所有 0x 开头的十六进制串
     NSError *err = nil;
     NSRegularExpression *re =
         [NSRegularExpression regularExpressionWithPattern:@"0[xX][0-9a-fA-F]{8,16}"
@@ -831,7 +898,6 @@ static const float kBtnW = 250.0f;
         NSArray *ms = [re matchesInString:txt options:0 range:NSMakeRange(0, txt.length)];
         for (NSTextCheckingResult *m in ms) {
             NSString *hex = [txt substringWithRange:m.range];
-            // 只保留像用户态指针的（>=0x100000000）
             unsigned long long v = strtoull(hex.UTF8String, NULL, 16);
             if (v >= 0x100000000ULL) [addrs addObject:hex];
         }
@@ -839,24 +905,22 @@ static const float kBtnW = 250.0f;
 
     if (addrs.count == 0) {
         self.outputText = [NSString stringWithFormat:
-            @"剪贴板里没找到地址。\n\n原文前200字：\n%@",
+            @"没找到地址。\n\n读到内容前 200 字：\n%@",
             [txt substringToIndex:MIN((NSUInteger)200, txt.length)]];
         return;
     }
 
-    // 去重
     NSMutableArray *uniq = [NSMutableArray array];
     for (NSString *a in addrs) if (![uniq containsObject:a]) [uniq addObject:a];
 
-    // 写文件
     NSString *path = @"/var/mobile/Library/Caches/com.wz.jbprobe.objs";
     [[uniq componentsJoinedByString:@"\n"] writeToFile:path atomically:YES
                                               encoding:NSUTF8StringEncoding error:nil];
 
     self.outputText = [NSString stringWithFormat:
-        @"已导入 %lu 个地址：\n%@\n\n写入 %@\n\n下一步：点「④ 标定并绘制」",
+        @"已导入 %lu 个地址：\n%@\n\n下一步：点「④ 标定并绘制」",
         (unsigned long)uniq.count,
-        [uniq componentsJoinedByString:@"\n"], path];
+        [uniq componentsJoinedByString:@"\n"]];
 }
 
 // ── ESP：读快照文件，把玩家画成方框 ──
