@@ -43,6 +43,11 @@ int  WZReadPlayers(WZPlayer *out, int maxCount);
 // 读相机（自己视角）
 int  WZReadCamera(WZVec3 *pos, WZVec3 *angles, float *fov);
 
+
+// 手动锚点（U3D 工具读出真值后设置，跳过扫描）
+void WZSetManualIns(uint64_t ins);
+int  WZLoadAnchor(void);
+
 // 状态文本
 const char *WZReadStatus(void);
 

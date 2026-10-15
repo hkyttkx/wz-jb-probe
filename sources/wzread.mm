@@ -55,6 +55,8 @@ static uint64_t  g_main_base = 0;    // 主二进制基址
 static uint64_t  g_main_size = 0;
 static uint64_t  g_ga_size = 0;
 static uint64_t  g_battleIns = 0;    // 找到的 Battle 实例
+static uint64_t  g_battleSF  = 0;    // Battle 静态字段区基址
+static uint64_t  g_manualIns = 0;    // 手动锚点（U3D 工具读出的真值）
 static char      g_status[512] = {0};
 
 // IL2CPP 模块的段信息（在 findModulesByMachO 里填充）
@@ -285,44 +287,66 @@ extern "C" int WZReadInit(pid_t pid) {
 // ── 扫描找 Battle.Ins ────────────────────────────────
 //  策略：在 GameAssembly 的可写数据段里逐个 8 字节当候选指针，
 //  读候选指向的对象，验证 Battle 的字段形态。
-static int checkBattleObj(uint64_t o) {
-    if (!looksPtr(o) || !readable(o)) return 0;
+// ── Battle 静态字段布局（来自 dump.cs，Battle 类 static_fields 区）──
+// 这是 IL2CPP 静态字段内存块，不是 Battle 对象内部。
+//   +0x00 sToxicGasZone / +0x08 sSafeZone
+//   +0x10..+0x78  14 个 readonly 委托（.cctor 后必然全部非零）
+//   +0x80 <InLoading> bool
+//   +0x88 Ins          ← 我们要找的
+#define BF_INS_OFF   0x88
+// readonly 委托字段区间（全部必须是非零指针）
+#define BF_CB_FIRST  0x10
+#define BF_CB_LAST   0x78
 
-    // ★ 铁律 1：IL2CPP 对象的 vtable（首 8 字节）必须落在 IL2CPP 模块范围内。
-    //   这是 Unity 对象最可靠的特征，能滤掉绝大多数野指针误命中。
-    uint64_t vt = rd64(o + 0x00);
-    if (!g_ga_base || vt < g_ga_base || vt >= g_ga_base + g_ga_size) {
-        // 模块信息缺失时不做此校验（避免把真实结果也滤掉）
-        if (g_ga_base && g_ga_size) return 0;
+// 判定一个「静态字段区基址」SF 是否是 Battle 的 static_fields 块
+//   SF + 0x88 = Ins 字段；其值应是合法的 Battle 对象指针
+static int checkBattleSF(uint64_t SF) {
+    if (SF < 0x100000000ULL) return 0;            // 太小
+    if (SF & 7) return 0;                         // 必须 8 字节对齐
+
+    // ① 核心判定：0x10..0x78 的 14 个 readonly 委托必须全部是非零合法指针
+    //    （Battle..cctor 执行后这些一定被赋值；误命中几乎不可能凑齐 14 个连续非零指针）
+    int hits = 0, total = 0;
+    for (uint64_t off = BF_CB_FIRST; off <= BF_CB_LAST; off += 8) {
+        uint64_t v = 0;
+        if (rd(SF + off, &v, 8) != 0) return 0;
+        total++;
+        if (v >= 0x100000000ULL && (v & 7) == 0) hits++;
+    }
+    if (total < 14 || hits < 14) return 0;        // 必须 14/14 全中
+
+    // ② Ins 字段（SF + 0x88）必须是合法对象指针
+    uint64_t P = rd64(SF + BF_INS_OFF);
+    if (P < 0x100000000ULL || (P & 7)) return 0;
+
+    // ③ Ins 对象的 vtable 必须落在 IL2CPP 模块范围内
+    uint64_t vt = rd64(P + 0x00);
+    if (g_ga_base && g_ga_size) {
+        if (vt < g_ga_base || vt >= g_ga_base + g_ga_size) return 0;
+    } else {
+        if (vt < 0x100000000ULL || (vt & 7)) return 0;
     }
 
-    uint64_t self  = rd64(o + OFF_Battle_SelfPlayer);
-    uint64_t cam   = rd64(o + OFF_Battle_MainCamera);
-    uint64_t dic   = rd64(o + OFF_Battle_OtherPlayersDic);
-    uint64_t team  = rd64(o + OFF_Battle_TeamPlayerDic);
-
-    // SelfPlayer / MainCamera / OtherPlayersDic 必须是合法且可读的指针
-    int ok = 0;
-    if (looksPtr(self) && readable(self))  ok++;
-    if (looksPtr(cam)  && readable(cam))   ok++;
-    if (looksPtr(dic)  && readable(dic))   ok++;
-    if (looksPtr(team) && readable(team))  ok++;
-
-    // ★ 铁律 2：OtherPlayersDic 必须是字典形态（entries 指针合法 + count 在合理区间）
-    int dicOK = 0;
-    if (looksPtr(dic) && readable(dic)) {
-        uint64_t ent = rd64(dic + OFF_DICT_ENTRIES);
-        int cnt = (int)(rd32(dic + OFF_DICT_COUNT) & 0x7FFFFFFF);
-        if (looksPtr(ent) && readable(ent) && cnt >= 1 && cnt <= 2048) dicOK = 1;
-    }
-
-    // ★ 铁律 3：LoadFinish 必须是 bool（0 或 1）
+    // ④ LoadFinish（Battle+0x18）必须是 bool
     uint8_t lf = 0;
-    rd(o + OFF_Battle_LoadFinish, &lf, 1);
-    if (lf > 1) ok -= 3;
+    rd(P + OFF_Battle_LoadFinish, &lf, 1);
+    if (lf > 1) return 0;
 
-    // 通过条件：字典形态成立 且 至少 3 个字段合法
-    return dicOK && ok >= 3;
+    // ⑤ OtherPlayersDic（Battle+0x58）必须是合法字典
+    uint64_t dic = rd64(P + OFF_Battle_OtherPlayersDic);
+    if (!looksPtr(dic) || !readable(dic)) return 0;
+    uint64_t ent = rd64(dic + OFF_DICT_ENTRIES);
+    if (!looksPtr(ent) || !readable(ent)) return 0;
+
+    return 1;
+}
+
+// 兼容旧调用名：给定 Battle 对象地址 P，反推其静态字段区是否成立
+static int checkBattleObj(uint64_t o) {
+    if (o < 0x100000000ULL) return 0;
+    uint64_t sf = o - BF_INS_OFF;                 // 尝试：o 就是 Ins 字段位置
+    if (checkBattleSF(sf) && rd64(sf + BF_INS_OFF) == o) return 1;
+    return 0;
 }
 
 // 通过扫描区域开头找 Mach-O 模块（拿不到路径时的替代）
@@ -416,6 +440,24 @@ static void findModulesByMachO(void) {
 }
 
 extern "C" uint64_t WZFindBattleIns(void) {
+    // ★ 优先：手动锚点（由 U3D 工具读出真值后设置）
+    if (g_manualIns) {
+        uint64_t sf = g_manualIns - BF_INS_OFF;   // 若 manualIns 就是对象地址
+        // 先按「Ins 对象地址」理解：其静态字段区 = ？无法反推，直接当对象用
+        if (looksPtr(g_manualIns) && readable(g_manualIns)) {
+            uint64_t vt = rd64(g_manualIns);
+            int vtOK = 1;
+            if (g_ga_base && g_ga_size)
+                vtOK = (vt >= g_ga_base && vt < g_ga_base + g_ga_size);
+            if (vtOK) {
+                g_battleIns = g_manualIns;
+                snprintf(g_status,sizeof(g_status),"Battle.Ins=0x%llx (锚点)",g_manualIns);
+                return g_manualIns;
+            }
+        }
+        (void)sf;
+    }
+
     if (g_battleIns && checkBattleObj(g_battleIns)) return g_battleIns;
     if (!g_ga_base) findModulesByMachO();
     if (!g_ga_base) {
@@ -429,7 +471,9 @@ extern "C" uint64_t WZFindBattleIns(void) {
     uint64_t step = 8;
     uint8_t  blk[0x1000];
 
-    // 内部扫描器：在 [start, start+len) 范围内按 8 字节步进找 Battle 对象指针
+    // 内部扫描器：把每个 8 字节槽当作候选「静态字段区基址 SF」，
+    // 因为 SF+0x88 恰是 Ins 字段，所以 SF 的候选 = 槽地址 - 0x88。
+    // 直接遍历内存，对每个候选 SF 调 checkBattleSF 判定。
     #define SCAN_RANGE(START, LEN) do {                                        \
         uint64_t _end = (START) + (LEN);                                       \
         for (uint64_t _a = (START); _a + step <= _end; _a += sizeof(blk)) {    \
@@ -437,15 +481,17 @@ extern "C" uint64_t WZFindBattleIns(void) {
             if (_a + _want > _end) _want = (size_t)(_end - _a);                \
             if (rd(_a, blk, _want) != 0) break;                                \
             for (size_t _off = 0; _off + 8 <= _want; _off += step) {           \
-                uint64_t _cand = *(uint64_t *)(blk + _off);                    \
-                if (!looksPtr(_cand)) continue;                                \
-                if (checkBattleObj(_cand)) {                                   \
-                    g_battleIns = _cand;                                       \
-                    os_log(OS_LOG_DEFAULT, "[wzread] ★ Battle.Ins=0x%llx slot=0x%llx", \
-                           _cand, _a + _off);                                  \
-                    snprintf(g_status,sizeof(g_status),"Battle.Ins=0x%llx",_cand); \
-                    return _cand;                                              \
-                }                                                              \
+                uint64_t _slot = _a + _off;                                    \
+                if (_slot < BF_INS_OFF) continue;                              \
+                uint64_t _sf = _slot - BF_INS_OFF;   /* 候选静态字段区基址 */  \
+                if (!checkBattleSF(_sf)) continue;                             \
+                uint64_t _ins = rd64(_sf + BF_INS_OFF);                        \
+                g_battleIns = _ins;                                            \
+                g_battleSF  = _sf;                                             \
+                os_log(OS_LOG_DEFAULT, "[wzread] ★ Battle.Ins=0x%llx (SF=0x%llx slot=0x%llx)", \
+                       _ins, _sf, _slot);                                      \
+                snprintf(g_status,sizeof(g_status),"Battle.Ins=0x%llx SF=0x%llx",_ins,_sf); \
+                return _ins;                                                   \
             }                                                                  \
         }                                                                      \
     } while (0)
@@ -547,5 +593,30 @@ extern "C" int WZReadCamera(WZVec3 *pos, WZVec3 *angles, float *fov) {
     if (!looksPtr(cam) || !readable(cam)) return -1;
     // vThirdPersonCamera 内部结构未知，先返回原始地址供上层调试
     if (pos) { pos->x = (float)cam; pos->y = 0; pos->z = 0; }
+    return 0;
+}
+
+// ── 手动锚点：由 U3D 工具读出 Battle.Ins 真值后调用 ──
+extern "C" void WZSetManualIns(uint64_t ins) {
+    g_manualIns = ins;
+    g_battleIns = 0;          // 清缓存，强制重算
+    os_log(OS_LOG_DEFAULT, "[wzread] 设置手动锚点 Battle.Ins=0x%llx", ins);
+}
+
+// ── 从外部文件读取锚点（HUD 可写文件，方便无需重编译）──
+// 文件格式：第一行 "ins=0x..." 或纯十六进制
+#define WZ_ANCHOR_PATH "/var/mobile/Library/Caches/com.wz.jbprobe.anchor"
+extern "C" int WZLoadAnchor(void) {
+    FILE *f = fopen(WZ_ANCHOR_PATH, "r");
+    if (!f) return -1;
+    char line[128] = {0};
+    if (!fgets(line, sizeof(line), f)) { fclose(f); return -1; }
+    fclose(f);
+    char *p = strstr(line, "0x");
+    uint64_t v = 0;
+    if (p) v = strtoull(p, NULL, 16);
+    else   v = strtoull(line, NULL, 16);
+    if (!v) return -1;
+    WZSetManualIns(v);
     return 0;
 }
