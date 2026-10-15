@@ -150,13 +150,17 @@ static void scanRegionsMVM(void) {
         kern_return_t kr = mach_vm_region(g_task, &addr, &size, VM_REGION_BASIC_INFO_64,
                                           &info, &cnt, &obj);
         if (kr != KERN_SUCCESS || size == 0) break;
-        // 只记录可读且较大的区域（模块/堆）
-        if ((info.protection & 1) && size >= 0x100000) {   // ★ 只留 ≥1MB 的大区域
+        // ★ 防死循环：size 为 0 或 addr 不前进时强制跳出
+        uint64_t next = addr + size;
+        if (next <= addr) break;
+        // 只记录可读区域（模块/堆）。门槛 128KB：
+        // 原来 1MB 太大，GameAssembly 的小段（__DATA_CONST 等）会被丢掉
+        if ((info.protection & 1) && size >= 0x20000) {
             g_regs[g_regCount].addr = addr;
             g_regs[g_regCount].size = size;
             g_regCount++;
         }
-        addr += size;
+        addr = next;
     }
     // 路径信息另查（proc_pidinfo 有就用，没有就算了）
     for (int i = 0; i < g_regCount; i++) {
@@ -201,12 +205,22 @@ extern "C" int WZReadInit(pid_t pid) {
     }
     snprintf(g_status,sizeof(g_status),"ok proc=0x%llx task=%d", g_proc, g_task);
 
-    scanRegionsMVM();       // ★ 用 task port 枚举（proc_pidinfo 对别的进程不给）
+    // ★ 三路递进定位 IL2CPP 模块：
+    //   ① scanRegions  —— 有 path 信息时能按名字匹配 GameAssembly/UnityFramework
+    //   ② scanRegionsMVM —— task port 枚举（补区域表）
+    //   ③ findModulesByMachO —— 按 Mach-O magic 兜底（跨进程无 path 时的主路径）
+    scanRegions();
+    scanRegionsMVM();
+    if (!g_ga_base) findModulesByMachO();
+
     if (!g_ga_base) {
         snprintf(g_status,sizeof(g_status),"未找到 IL2CPP 模块（regions=%d main=0x%llx）",
                  g_regCount, g_main_base);
         return 2;      // 非致命：probe 仍会输出区域列表
     }
+    snprintf(g_status, sizeof(g_status),
+             "ok GA=0x%llx(0x%llx) data=0x%llx regions=%d",
+             g_ga_base, g_ga_size, g_ga_data_addr, g_regCount);
     return 0;
 }
 
@@ -233,6 +247,58 @@ static int checkBattleObj(uint64_t o) {
 }
 
 // 通过扫描区域开头找 Mach-O 模块（拿不到路径时的替代）
+// ── 记录 UnityFramework 的 __DATA 段（IL2CPP 静态字段在这里）──
+static uint64_t g_ga_data_addr = 0;   // __DATA 实际运行地址
+static uint64_t g_ga_data_size = 0;
+static uint64_t g_ga_text_vm   = 0;   // __TEXT 的链接时 vmaddr（算 slide 用）
+
+// 解析 Mach-O 的 LC_SEGMENT_64，输出 __TEXT/__DATA 的 vmaddr 与 vmsize
+// ★ 注意：只对「已经选定为 IL2CPP 模块」的那个 Mach-O 调用，避免被系统库污染
+static void parseSegments(uint64_t base, uint64_t maxSize) {
+    (void)maxSize;
+    uint32_t magic = 0;
+    if (rd(base, &magic, 4) != 0 || magic != 0xFEEDFACF) return;
+
+    uint32_t ncmds = 0;
+    rd(base + 16, &ncmds, 4);
+    uint64_t cmdAddr = base + 32;   // mach_header_64 大小
+
+    uint64_t textVM = 0, dataAddr = 0, dataSize = 0;
+
+    for (uint32_t i = 0; i < ncmds && i < 2048; i++) {
+        uint32_t cmd = 0, cmdsize = 0;
+        if (rd(cmdAddr, &cmd, 4) != 0) break;
+        if (rd(cmdAddr + 4, &cmdsize, 4) != 0) break;
+        if (cmdsize < 8 || cmdsize > 0x10000) break;
+
+        if (cmd == 0x19) {   // LC_SEGMENT_64
+            char segname[17] = {0};
+            rd(cmdAddr + 8, segname, 16);
+            uint64_t vmaddr = 0, vmsize = 0;
+            rd(cmdAddr + 24, &vmaddr, 8);
+            rd(cmdAddr + 32, &vmsize, 8);
+            os_log(OS_LOG_DEFAULT, "[wzread] seg %s vm=0x%llx sz=0x%llx", segname, vmaddr, vmsize);
+            if (strcmp(segname, "__TEXT") == 0 && !textVM) {
+                textVM = vmaddr;
+            }
+            if (!dataAddr &&
+                (strcmp(segname, "__DATA") == 0 || strcmp(segname, "__DATA_CONST") == 0)) {
+                dataAddr = vmaddr;
+                dataSize = vmsize;
+            }
+        }
+        cmdAddr += cmdsize;
+    }
+
+    // 全部段读完后统一算 slide，再写回全局（避免中途半成品状态）
+    if (textVM && dataAddr) {
+        uint64_t slide = base - textVM;
+        g_ga_data_addr = dataAddr + slide;
+        g_ga_data_size = dataSize;
+        g_ga_text_vm   = textVM;
+    }
+}
+
 static void findModulesByMachO(void) {
     for (int i = 0; i < g_regCount; i++) {
         uint32_t magic = 0;
@@ -244,12 +310,14 @@ static void findModulesByMachO(void) {
             uint64_t sz = g_regs[i].size;
             os_log(OS_LOG_DEFAULT, "[wzread] Mach-O @0x%llx size=0x%llx type=%u",
                    g_regs[i].addr, sz, filetype);
-            // 大模块（>8MB）很可能是 UnityFramework
-            if (sz > 0x1000000 && !g_ga_base) {   // ★ 提门槛到 16MB（UnityFramework 级别）
+            // ★ 门槛降到 2MB：UnityFramework 的 __TEXT 段可能不算特大，
+            //   但一定比普通系统库大。真正的判别交给段名解析。
+            if (sz > 0x200000 && !g_ga_base) {
                 g_ga_base = g_regs[i].addr;
                 g_ga_size = sz;
-                os_log(OS_LOG_DEFAULT, "[wzread] 疑似 IL2CPP 模块 @0x%llx (0x%llx)",
-                       g_ga_base, g_ga_size);
+                parseSegments(g_regs[i].addr, sz);
+                os_log(OS_LOG_DEFAULT, "[wzread] 疑似 IL2CPP 模块 @0x%llx (0x%llx) data=0x%llx",
+                       g_ga_base, g_ga_size, g_ga_data_addr);
             }
             if (!g_main_base) { g_main_base = g_regs[i].addr; g_main_size = sz; }
         }
@@ -264,27 +332,60 @@ extern "C" uint64_t WZFindBattleIns(void) {
         if (g_main_base) { g_ga_base = g_main_base; g_ga_size = g_main_size; }
         else return 0;
     }
-    os_log(OS_LOG_DEFAULT, "[wzread] 扫描 0x%llx+0x%llx 找 Battle.Ins", g_ga_base, g_ga_size);
-    // 扫整个 GameAssembly 映射（含 __DATA）
+    os_log(OS_LOG_DEFAULT, "[wzread] 扫描 0x%llx+0x%llx 找 Battle.Ins (data=0x%llx+0x%llx)",
+           g_ga_base, g_ga_size, g_ga_data_addr, g_ga_data_size);
+
     uint64_t step = 8;
-    uint64_t end  = g_ga_base + g_ga_size;
     uint8_t  blk[0x1000];
-    for (uint64_t a = g_ga_base; a + step <= end; a += sizeof(blk)) {
-        size_t want = sizeof(blk);
-        if (a + want > end) want = (size_t)(end - a);
-        if (rd(a, blk, want) != 0) break;
-        for (size_t off = 0; off + 8 <= want; off += step) {
-            uint64_t cand = *(uint64_t *)(blk + off);
-            if (!looksPtr(cand)) continue;
-            if (checkBattleObj(cand)) {
-                g_battleIns = cand;
-                os_log(OS_LOG_DEFAULT, "[wzread] ★ Battle.Ins = 0x%llx (slot 0x%llx)",
-                       cand, a + off);
-                snprintf(g_status,sizeof(g_status),"Battle.Ins=0x%llx",cand);
-                return cand;
-            }
-        }
+
+    // 内部扫描器：在 [start, start+len) 范围内按 8 字节步进找 Battle 对象指针
+    #define SCAN_RANGE(START, LEN) do {                                        \
+        uint64_t _end = (START) + (LEN);                                       \
+        for (uint64_t _a = (START); _a + step <= _end; _a += sizeof(blk)) {    \
+            size_t _want = sizeof(blk);                                        \
+            if (_a + _want > _end) _want = (size_t)(_end - _a);                \
+            if (rd(_a, blk, _want) != 0) break;                                \
+            for (size_t _off = 0; _off + 8 <= _want; _off += step) {           \
+                uint64_t _cand = *(uint64_t *)(blk + _off);                    \
+                if (!looksPtr(_cand)) continue;                                \
+                if (checkBattleObj(_cand)) {                                   \
+                    g_battleIns = _cand;                                       \
+                    os_log(OS_LOG_DEFAULT, "[wzread] ★ Battle.Ins=0x%llx slot=0x%llx", \
+                           _cand, _a + _off);                                  \
+                    snprintf(g_status,sizeof(g_status),"Battle.Ins=0x%llx",_cand); \
+                    return _cand;                                              \
+                }                                                              \
+            }                                                                  \
+        }                                                                      \
+    } while (0)
+
+    // ① 优先扫 __DATA 段（IL2CPP 托管静态字段在这里，命中率最高、范围最小）
+    if (g_ga_data_addr && g_ga_data_size) {
+        os_log(OS_LOG_DEFAULT, "[wzread] 阶段1: 扫 __DATA");
+        SCAN_RANGE(g_ga_data_addr, g_ga_data_size);
     }
+
+    // ② 再扫整个 IL2CPP 模块映射（含 __TEXT，兜底）
+    os_log(OS_LOG_DEFAULT, "[wzread] 阶段2: 扫整个模块");
+    SCAN_RANGE(g_ga_base, g_ga_size);
+
+    // ③ 最后扫所有可写区域（有些游戏把对象放独立堆/匿名映射）
+    os_log(OS_LOG_DEFAULT, "[wzread] 阶段3: 扫可写区域");
+    for (int i = 0; i < g_regCount; i++) {
+        uint64_t a = g_regs[i].addr, sz = g_regs[i].size;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj = MACH_PORT_NULL;
+        if (mach_vm_region(g_task, &a, &sz, VM_REGION_BASIC_INFO_64,
+                           &info, &cnt, &obj) != KERN_SUCCESS) continue;
+        if (!(info.protection & 2)) continue;      // 2 = VM_PROT_WRITE
+        if (sz < 0x40000) continue;
+        // 跳过已经扫过的 IL2CPP 模块范围
+        if (a >= g_ga_base && a < g_ga_base + g_ga_size) continue;
+        SCAN_RANGE(a, sz);
+    }
+    #undef SCAN_RANGE
+
     snprintf(g_status,sizeof(g_status),"未找到 Battle.Ins");
     return 0;
 }
