@@ -62,6 +62,8 @@ static uint64_t  g_ga_size = 0;
 static uint64_t  g_battleIns = 0;    // 找到的 Battle 实例
 static uint64_t  g_battleSF  = 0;    // Battle 静态字段区基址
 static uint64_t  g_manualIns = 0;    // 手动锚点（U3D 工具读出的真值）
+static uint64_t  g_manualObjs[64];    // 手动对象地址列表
+static int       g_manualObjCount = 0;
 static char      g_status[512] = {0};
 
 // IL2CPP 模块的段信息（在 findModulesByMachO 里填充）
@@ -806,8 +808,6 @@ extern "C" int WZLoadAnchor(void) {
 //  OtherPlayerController 直读路线（不依赖 Battle）
 // ══════════════════════════════════════════════════════
 
-static uint64_t g_manualObjs[64];
-static int      g_manualObjCount = 0;
 
 // 手动填入 OtherPlayerController 地址（U3D 工具读出）
 extern "C" void WZSetManualObjs(const uint64_t *objs, int count) {
