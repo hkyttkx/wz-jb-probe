@@ -208,6 +208,8 @@ static void scanRegionsMVM(void) {
 }
 
 
+extern "C" int zFindClassName(const char *cls, char *out, size_t n);
+
 extern "C" void WZReadProbe(char *out, size_t n) {
     int o = 0;
     o += snprintf(out+o, n-o, "pid=%d proc=0x%llx\n", g_pid, g_proc);
@@ -270,6 +272,15 @@ extern "C" void WZReadProbe(char *out, size_t n) {
     }
     o += snprintf(out+o, n-o, "玩家数 = %d\n", WZReadPlayers(NULL, 0));
     o += snprintf(out+o, n-o, "(OtherPlayer 扫描请用「扫描玩家」按钮)\n");
+
+    // ── 类名字符串搜索（全自动定位的第一步）──
+    o += snprintf(out+o, n-o, "\n── 类名搜索 ──\n");
+    {
+        char sb[4096];
+        int nf = zFindClassName("OtherPlayerController", sb, sizeof(sb));
+        o += snprintf(out+o, n-o, "OtherPlayerController 命中 %d 处\n", nf);
+        o += snprintf(out+o, n-o, "%s", sb);
+    }
 }
 
 // ── 初始化 ───────────────────────────────────────────
@@ -1072,4 +1083,120 @@ extern "C" int WZCalibAndReport(char *out, size_t n) {
     int sn = WZWriteSnapshot();
     o += snprintf(out+o, n-o, "快照写入 = %d 个玩家\n", sn);
     return okc;
+}
+
+// ══════════════════════════════════════════════════════
+//  类名搜索：在内存里找 "OtherPlayerController" 字符串
+//  这是全自动定位 Il2CppClass 的第一步（不需要任何外部地址）
+// ══════════════════════════════════════════════════════
+
+// 在 [base, base+size) 里搜 needle（含结尾 \0），返回首次命中地址；0=未找到
+extern "C" uint64_t zMemSearch(uint64_t base, uint64_t size,
+                               const char *needle, int *hitCount, size_t maxHit,
+                               uint64_t *hits) {
+    size_t nlen = strlen(needle);
+    if (!nlen) return 0;
+    if (hitCount) *hitCount = 0;
+
+    static uint8_t blk[0x10000];      // 64KB 块
+    uint64_t first = 0;
+    int nh = 0;
+
+    for (uint64_t p = base; p + nlen < base + size; p += sizeof(blk)) {
+        size_t want = sizeof(blk);
+        if (p + want > base + size) want = (size_t)(base + size - p);
+        if (rd(p, blk, want) != 0) continue;
+
+        for (size_t i = 0; i + nlen <= want; i++) {
+            if (blk[i] != (uint8_t)needle[0]) continue;
+            if (memcmp(blk + i, needle, nlen) != 0) continue;
+            // 要求后面是 \0 或不可打印（避免匹配到别的标识符的子串）
+            uint8_t nc = (i + nlen < want) ? blk[i + nlen] : 0;
+            if (nc != 0 && nc != '_' && (nc >= 'a' && nc <= 'z')) continue;
+            uint64_t addr = p + i;
+            if (!first) first = addr;
+            if (hits && hitCount && (size_t)nh < maxHit) hits[nh] = addr;
+            nh++;
+            if (hitCount && (size_t)nh >= maxHit) {
+                *hitCount = nh;
+                return first;
+            }
+        }
+    }
+    if (hitCount) *hitCount = nh;
+    return first;
+}
+
+// 在 IL2CPP 模块范围内搜类名（__TEXT + __DATA + 所有区域）
+extern "C" int zFindClassName(const char *cls, char *out, size_t n) {
+    int o = 0;
+    if (!g_ga_base) { snprintf(out, n, "模块未定位\n"); return -1; }
+
+    uint64_t hits[32];
+    int total = 0;
+
+    // ★ 预算：最多搜 48MB（字符串在元数据区，通常靠前），避免卡死
+    #define CLS_SEARCH_MAX (48ULL*1024*1024)
+    uint64_t searchSize = g_ga_size;
+    if (searchSize > CLS_SEARCH_MAX) searchSize = CLS_SEARCH_MAX;
+
+    // ① 在模块内搜
+    int nh = 0;
+    {
+        size_t nlen = strlen(cls);
+        uint64_t base = g_ga_base, size = searchSize;
+        static uint8_t b2[0x10000];
+        for (uint64_t p = base; p + nlen < base + size; p += 0x10000) {
+            size_t want = 0x10000;
+            if (p + want > base + size) want = (size_t)(base + size - p);
+            if (rd(p, b2, want) != 0) continue;
+            for (size_t i = 0; i + nlen <= want; i++) {
+                if (b2[i] != (uint8_t)cls[0]) continue;
+                if (memcmp(b2 + i, cls, nlen) != 0) continue;
+                uint8_t nc = (i + nlen < want) ? b2[i + nlen] : 0;
+                if (nc != 0 && nc != '_' && (nc >= 'a' && nc <= 'z')) continue;
+                if (nh < 32) hits[nh] = p + i;
+                nh++;
+            }
+            if (nh >= 32) break;
+        }
+    }
+    total = nh;
+
+    o += snprintf(out+o, n-o, "搜索 \"%s\" 范围 0x%llx+0x%llx(限%lluMB)\n",
+                  cls, g_ga_base, g_ga_size, CLS_SEARCH_MAX/1024/1024);
+    o += snprintf(out+o, n-o, "命中 %d 处:\n", total);
+    for (int i = 0; i < total && i < 16 && o < (int)n-80; i++)
+        o += snprintf(out+o, n-o, "  [%d] 0x%llx\n", i, hits[i]);
+
+    if (total == 0)
+        o += snprintf(out+o, n-o, "模块内没找到该字符串\n");
+
+    // ② 只对前 2 个命中做引用反查（限制扫描量）
+    for (int i = 0; i < total && i < 2 && o < (int)n-500; i++) {
+        uint64_t sa = hits[i];
+        o += snprintf(out+o, n-o, "\n字符串 @0x%llx 的引用:\n", sa);
+        int rc = 0;
+        static uint8_t b3[0x10000];
+        for (uint64_t p = g_ga_base;
+             p + 8 < g_ga_base + searchSize && rc < 8;
+             p += 0x10000) {
+            size_t want = 0x10000;
+            if (p + want > g_ga_base + searchSize)
+                want = (size_t)(g_ga_base + searchSize - p);
+            if (rd(p, b3, want) != 0) continue;
+            for (size_t k = 0; k + 8 <= want; k += 8) {
+                uint64_t v = *(uint64_t *)(b3 + k);
+                if (v == sa) {
+                    o += snprintf(out+o, n-o, "  ref @0x%llx (距字符串 +0x%llx)\n",
+                                  p + k, (p + k) - sa);
+                    rc++;
+                    if (rc >= 8) break;
+                }
+            }
+            if (rc >= 8) break;
+        }
+        if (rc == 0) o += snprintf(out+o, n-o, "  (模块内无引用)\n");
+    }
+    return total;
 }

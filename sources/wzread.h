@@ -76,6 +76,9 @@ int WZCalibAndReport(char *out, size_t n);
 
 int WZRestoreClassFromOffset(void);
 
+
+int zFindClassName(const char *cls, char *out, size_t n);
+
 // 状态文本
 const char *WZReadStatus(void);
 
