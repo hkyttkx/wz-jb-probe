@@ -79,6 +79,7 @@ extern "C" const char *WZReadStatus(void) { return g_status; }
 static int zIsOtherPlayerObj(uint64_t o);
 static int zPlayerFromObj(uint64_t o, WZPlayer *p);
 static int zIsOtherPlayerObjFast(uint64_t o);
+extern "C" int WZRestoreClassFromOffset(void);
 
 // ── 读内存（走 libjailbreak 的 proc_vreadbuf）─────────
 extern "C" int mach_vm_read_overwrite(vm_map_t, uint64_t, uint64_t, uint64_t, uint64_t *);
@@ -300,12 +301,13 @@ extern "C" int WZReadInit(pid_t pid) {
              "ok GA=0x%llx(0x%llx) data=0x%llx regions=%d",
              g_ga_base, g_ga_size, g_ga_data_addr, g_regCount);
 
-    // ★ 自动导入地址文件（UI 从剪贴板写入），有则优先用
-    {
+    // ★ 优先：从已保存的固定偏移恢复 class（跨局/跨重启自动，无需地址）
+    int restored = WZRestoreClassFromOffset();
+    if (restored != 0) {
+        // 没有偏移记录 → 看有没有手动导入的地址，用它标定
         int imp = WZLoadObjsFromFile();
         if (imp > 0) {
             os_log(OS_LOG_DEFAULT, "[wzread] 已导入 %d 个手动地址", imp);
-            // 用这些地址标定 OtherPlayerController 的 Il2CppClass*
             WZCalibrateFromObjs();
         }
     }
@@ -384,10 +386,39 @@ extern "C" int WZCalibrateFromObjs(void) {
     if (best < 0 || bestC < 1) return -1;
 
     g_opcClass = votes[best];
-    os_log(OS_LOG_DEFAULT, "[wzread] ★ 标定 OtherPlayerController class = 0x%llx (命中 %d/%d)",
-           g_opcClass, bestC, g_manualObjCount);
-    snprintf(g_status, sizeof(g_status), "标定 class=0x%llx (%d/%d)",
-             g_opcClass, bestC, g_manualObjCount);
+
+    // ★ 算出相对模块基址的固定偏移（这是关键，可跨重启复用）
+    uint64_t off = (g_ga_base && g_opcClass > g_ga_base) ? (g_opcClass - g_ga_base) : 0;
+
+    os_log(OS_LOG_DEFAULT,
+           "[wzread] ★ 标定 OtherPlayerController class=0x%llx offset=+0x%llx (命中 %d/%d)",
+           g_opcClass, off, bestC, g_manualObjCount);
+
+    // 存到文件，供 UI 显示 / 跨版本复用
+    FILE *fp = fopen("/var/mobile/Library/Caches/com.wz.jbprobe.classoff", "w");
+    if (fp) {
+        fprintf(fp, "0x%llx\n", off);
+        fclose(fp);
+    }
+
+    snprintf(g_status, sizeof(g_status), "class=0x%llx offset=+0x%llx (%d/%d)",
+             g_opcClass, off, bestC, g_manualObjCount);
+    return 0;
+}
+
+// ── 从固定偏移恢复 class（跨重启用，不需要再给地址）──
+extern "C" int WZRestoreClassFromOffset(void) {
+    FILE *f = fopen("/var/mobile/Library/Caches/com.wz.jbprobe.classoff", "r");
+    if (!f) return -1;
+    char line[64] = {0};
+    if (!fgets(line, sizeof(line), f)) { fclose(f); return -1; }
+    fclose(f);
+    uint64_t off = strtoull(line, NULL, 16);
+    if (!off || !g_ga_base) return -1;
+    g_opcClass = g_ga_base + off;
+    os_log(OS_LOG_DEFAULT, "[wzread] 从偏移恢复 class=0x%llx (base=0x%llx +0x%llx)",
+           g_opcClass, g_ga_base, off);
+    snprintf(g_status, sizeof(g_status), "恢复 class=0x%llx (offset+0x%llx)", g_opcClass, off);
     return 0;
 }
 
@@ -1012,6 +1043,12 @@ extern "C" int WZCalibAndReport(char *out, size_t n) {
         return -2;
     }
     o += snprintf(out+o, n-o, "\n★ 标定成功 OtherPlayerController.class = 0x%llx\n", WZGetOpcClass());
+    {
+        uint64_t off = (g_ga_base && g_opcClass > g_ga_base) ? (g_opcClass - g_ga_base) : 0;
+        o += snprintf(out+o, n-o, "  模块基址 = 0x%llx\n", g_ga_base);
+        o += snprintf(out+o, n-o, "  class    = 0x%llx\n", g_opcClass);
+        o += snprintf(out+o, n-o, "  ★ 固定偏移 = +0x%llx  (已存文件，之后可跨局复用)\n", off);
+    }
 
     // 用标定值验证每个地址
     o += snprintf(out+o, n-o, "\n验证各地址（用 vtable 匹配）：\n");

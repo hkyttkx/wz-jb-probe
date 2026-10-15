@@ -73,6 +73,9 @@ void     WZSetOpcClass(uint64_t c);
 
 int WZCalibAndReport(char *out, size_t n);
 
+
+int WZRestoreClassFromOffset(void);
+
 // 状态文本
 const char *WZReadStatus(void);
 
