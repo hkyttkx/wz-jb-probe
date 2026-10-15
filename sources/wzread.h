@@ -48,6 +48,12 @@ int  WZReadCamera(WZVec3 *pos, WZVec3 *angles, float *fov);
 void WZSetManualIns(uint64_t ins);
 int  WZLoadAnchor(void);
 
+
+// OtherPlayerController 直读路线
+void WZSetManualObjs(const uint64_t *objs, int count);
+int  WZVerifyObj(uint64_t o, char *out, size_t n);
+int  WZScanOtherPlayers(WZPlayer *out, int maxCount);
+
 // 状态文本
 const char *WZReadStatus(void);
 

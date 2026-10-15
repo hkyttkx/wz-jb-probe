@@ -35,7 +35,12 @@ extern "C" int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int
 #define OFF_OPC_TargetPos         0x3C4
 #define OFF_OPC_Info              0x3F0
 #define OFF_OPC_RebirthTime       0x3FC
-#define OFF_OPC_IsDun             0x41E
+#define OFF_OPC_IsDun            0x41E
+#define OFF_OPC_LFootForIK       0x408
+#define OFF_OPC_RFootForIK       0x410
+#define OFF_OPC_CullingIndex     0x418
+#define OFF_OPC_WorldPos         0x43C
+#define OFF_OPC_Cameraforward    0x45C
 // PlayerInfo
 #define OFF_PI_IsOnline           0x18
 #define OFF_PI_HeadId             0x1C
@@ -91,6 +96,13 @@ static int rd(uint64_t addr, void *buf, size_t len) {
 static uint64_t rd64(uint64_t addr) { uint64_t v=0; rd(addr,&v,8); return v; }
 static uint32_t rd32(uint64_t addr) { uint32_t v=0; rd(addr,&v,4); return v; }
 static float    rdf (uint64_t addr) { float v=0; rd(addr,&v,4); return v; }
+
+// 浮点辅助：是否为有限数（非 NaN / 非 Inf）
+static int fx_finite(float f) {
+    union { float f; uint32_t u; } v; v.f = f;
+    return ((v.u >> 23) & 0xFF) != 0xFF;
+}
+static float z_absf(float f) { return f < 0 ? -f : f; }
 
 // 地址是否像堆/数据指针
 static int looksPtr(uint64_t p) {
@@ -249,6 +261,20 @@ extern "C" void WZReadProbe(char *out, size_t n) {
         o += snprintf(out+o, n-o, "  (未找到) %s\n", g_status);
     }
     o += snprintf(out+o, n-o, "玩家数 = %d\n", WZReadPlayers(NULL, 0));
+
+    // ── OtherPlayerController 直读路线诊断 ──
+    o += snprintf(out+o, n-o, "\n── OtherPlayer 直读 ──\n");
+    {
+        static WZPlayer t[64];
+        int n2 = WZScanOtherPlayers(t, 64);
+        o += snprintf(out+o, n-o, "扫描到 %d 个 OtherPlayerController\n", n2);
+        for (int i = 0; i < n2 && i < 8; i++) {
+            o += snprintf(out+o, n-o,
+                "  #%d obj=0x%llx pos=(%.1f,%.1f,%.1f) blood=%d head=%d online=%d\n",
+                i, t[i].obj, t[i].pos.x, t[i].pos.y, t[i].pos.z,
+                t[i].blood, t[i].headId, t[i].online);
+        }
+    }
 }
 
 // ── 初始化 ───────────────────────────────────────────
@@ -284,7 +310,80 @@ extern "C" int WZReadInit(pid_t pid) {
     return 0;
 }
 
-// ── 扫描找 Battle.Ins ────────────────────────────────
+// ── 解析单个 OtherPlayerController → WZPlayer ──
+// 返回 1 成功
+static int zPlayerFromObj(uint64_t o, WZPlayer *p) {
+    if (!looksPtr(o) || !readable(o)) return 0;
+    memset(p, 0, sizeof(*p));
+    p->obj = o;
+
+    // 坐标：优先 WorldPos(0x43C)，回退 m_TargetPos(0x3C4)
+    float wx = rdf(o + OFF_OPC_WorldPos);
+    float wy = rdf(o + OFF_OPC_WorldPos + 4);
+    float wz = rdf(o + OFF_OPC_WorldPos + 8);
+    int wOK = (wx == wx && wy == wy && wz == wz) &&      // 非 NaN
+              (fx_finite(wx) && fx_finite(wy) && fx_finite(wz)) &&
+              (wx != 0.0f || wy != 0.0f || wz != 0.0f) &&
+              (z_absf(wx) < 1e7f && z_absf(wy) < 1e7f && z_absf(wz) < 1e7f);
+
+    float tx = rdf(o + OFF_OPC_TargetPos);
+    float ty = rdf(o + OFF_OPC_TargetPos + 4);
+    float tz = rdf(o + OFF_OPC_TargetPos + 8);
+    int tOK = (tx == tx && ty == ty && tz == tz) &&
+              (fx_finite(tx) && fx_finite(ty) && fx_finite(tz)) &&
+              (tx != 0.0f || ty != 0.0f || tz != 0.0f) &&
+              (z_absf(tx) < 1e7f && z_absf(ty) < 1e7f && z_absf(tz) < 1e7f);
+
+    if (wOK)      { p->pos.x = wx; p->pos.y = wy; p->pos.z = wz; }
+    else if (tOK) { p->pos.x = tx; p->pos.y = ty; p->pos.z = tz; }
+
+    // PlayerInfo
+    uint64_t info = rd64(o + OFF_OPC_Info);
+    if (looksPtr(info) && readable(info)) {
+        p->blood  = (int)(rd32(info + OFF_PI_Blood) & 0x7FFFFFFF);
+        p->headId = (int)rd32(info + OFF_PI_HeadId);
+        p->online = (int)rd32(info + OFF_PI_IsOnline);
+    }
+    p->rebirthTime = (int)rd32(o + OFF_OPC_RebirthTime);
+    p->isDun       = (int)rd32(o + OFF_OPC_IsDun);
+    p->valid = 1;
+    return 1;
+}
+
+// ── 判定候选 O 是否为 OtherPlayerController 对象 ──
+// 依据 dump.cs 的真实字段布局
+static int zIsOtherPlayerObj(uint64_t o) {
+    if (!looksPtr(o) || !readable(o)) return 0;
+
+    // ① Info（0x3F0）必须是合法指针，且内容像 PlayerInfo
+    uint64_t info = rd64(o + OFF_OPC_Info);
+    if (!looksPtr(info) || !readable(info)) return 0;
+    int online = (int)rd32(info + OFF_PI_IsOnline);
+    int head   = (int)rd32(info + OFF_PI_HeadId);
+    int blood  = (int)rd32(info + OFF_PI_Blood);
+    if (online != 0 && online != 1) return 0;          // isOnline: bool
+    if (head < 0 || head > 100000) return 0;           // headId: 小整数
+    if (blood < 0 || blood > 100000) return 0;         // blood: 合理范围
+
+    // ② LFootForIK(0x408) / RFootForIK(0x410) 必须是合法指针
+    uint64_t lf = rd64(o + OFF_OPC_LFootForIK);
+    uint64_t rf = rd64(o + OFF_OPC_RFootForIK);
+    if (!looksPtr(lf) || !looksPtr(rf)) return 0;
+
+    // ③ WorldPos(0x43C) 必须是 3 个有限浮点
+    float wx = rdf(o + OFF_OPC_WorldPos);
+    float wy = rdf(o + OFF_OPC_WorldPos + 4);
+    float wz = rdf(o + OFF_OPC_WorldPos + 8);
+    if (!(wx == wx && wy == wy && wz == wz)) return 0;
+    if (!(fx_finite(wx) && fx_finite(wy) && fx_finite(wz))) return 0;
+    if (z_absf(wx) > 1e7f || z_absf(wy) > 1e7f || z_absf(wz) > 1e7f) return 0;
+
+    // ④ CullingIndex(0x418) 小整数
+    int ci = (int)rd32(o + OFF_OPC_CullingIndex);
+    if (ci < 0 || ci > 100000) return 0;
+
+    return 1;
+}
 //  策略：在 GameAssembly 的可写数据段里逐个 8 字节当候选指针，
 //  读候选指向的对象，验证 Battle 的字段形态。
 // ── Battle 静态字段布局（来自 dump.cs，Battle 类 static_fields 区）──
@@ -619,4 +718,99 @@ extern "C" int WZLoadAnchor(void) {
     if (!v) return -1;
     WZSetManualIns(v);
     return 0;
+}
+
+// ══════════════════════════════════════════════════════
+//  OtherPlayerController 直读路线（不依赖 Battle）
+// ══════════════════════════════════════════════════════
+
+static uint64_t g_manualObjs[64];
+static int      g_manualObjCount = 0;
+
+// 手动填入 OtherPlayerController 地址（U3D 工具读出）
+extern "C" void WZSetManualObjs(const uint64_t *objs, int count) {
+    if (count > 64) count = 64;
+    for (int i = 0; i < count; i++) g_manualObjs[i] = objs[i];
+    g_manualObjCount = count;
+    os_log(OS_LOG_DEFAULT, "[wzread] 手动对象数 = %d", count);
+}
+
+// 验证单个地址：打印所有字段解析结果（调试用）
+extern "C" int WZVerifyObj(uint64_t o, char *out, size_t n) {
+    int off = 0;
+    off += snprintf(out+off, n-off, "对象 0x%llx\n", o);
+    if (!looksPtr(o) || !readable(o)) {
+        off += snprintf(out+off, n-off, "  不可读\n");
+        return -1;
+    }
+    uint64_t vt = rd64(o + 0);
+    off += snprintf(out+off, n-off, "  vtable        = 0x%llx (模块内=%s)\n", vt,
+                    (g_ga_base && vt >= g_ga_base && vt < g_ga_base+g_ga_size) ? "是" : "否");
+    off += snprintf(out+off, n-off, "  m_TargetPos   = (%.1f, %.1f, %.1f) @0x3C4\n",
+                    rdf(o+OFF_OPC_TargetPos), rdf(o+OFF_OPC_TargetPos+4), rdf(o+OFF_OPC_TargetPos+8));
+    off += snprintf(out+off, n-off, "  WorldPos      = (%.1f, %.1f, %.1f) @0x43C\n",
+                    rdf(o+OFF_OPC_WorldPos), rdf(o+OFF_OPC_WorldPos+4), rdf(o+OFF_OPC_WorldPos+8));
+    off += snprintf(out+off, n-off, "  m_speed       = %.1f @0x3D0\n", rdf(o+0x3D0));
+    off += snprintf(out+off, n-off, "  Info          = 0x%llx @0x3F0\n", rd64(o+OFF_OPC_Info));
+    uint64_t info = rd64(o+OFF_OPC_Info);
+    if (looksPtr(info) && readable(info)) {
+        off += snprintf(out+off, n-off, "    role        = 0x%llx @0x10\n", rd64(info+0x10));
+        off += snprintf(out+off, n-off, "    isOnline    = %u\n", rd32(info+OFF_PI_IsOnline) & 0xFF);
+        off += snprintf(out+off, n-off, "    headId      = %d\n", (int)rd32(info+OFF_PI_HeadId));
+        off += snprintf(out+off, n-off, "    headFrame   = %d\n", (int)rd32(info+0x20));
+        off += snprintf(out+off, n-off, "    blood       = %d\n", (int)rd32(info+OFF_PI_Blood));
+        off += snprintf(out+off, n-off, "    playerState = %u\n", rd32(info+0x28) & 0xFF);
+        off += snprintf(out+off, n-off, "    reLiveTime  = %d\n", (int)rd32(info+0x2C));
+    } else {
+        off += snprintf(out+off, n-off, "    (Info 不可读)\n");
+    }
+    off += snprintf(out+off, n-off, "  LFootForIK    = 0x%llx @0x408\n", rd64(o+OFF_OPC_LFootForIK));
+    off += snprintf(out+off, n-off, "  RFootForIK    = 0x%llx @0x410\n", rd64(o+OFF_OPC_RFootForIK));
+    off += snprintf(out+off, n-off, "  CullingIndex  = %d @0x418\n", (int)rd32(o+OFF_OPC_CullingIndex));
+    off += snprintf(out+off, n-off, "  RebirthTime   = %d @0x3FC\n", (int)rd32(o+OFF_OPC_RebirthTime));
+    off += snprintf(out+off, n-off, "  IsDun         = %u @0x41E\n", rd32(o+OFF_OPC_IsDun) & 0xFF);
+    off += snprintf(out+off, n-off, "  IsVirtual     = %u @0x41F\n", rd32(o+OFF_OPC_IsDun+1) & 0xFF);
+    off += snprintf(out+off, n-off, "  RedNameScore  = %d @0x438\n", (int)rd32(o+0x438));
+    off += snprintf(out+off, n-off, "  → 判定结果: %s\n", zIsOtherPlayerObj(o) ? "★ 有效 OtherPlayerController" : "× 不符合");
+    return zIsOtherPlayerObj(o) ? 0 : -1;
+}
+
+// 扫描托管堆找所有 OtherPlayerController
+extern "C" int WZScanOtherPlayers(WZPlayer *out, int maxCount) {
+    int n = 0;
+
+    // ① 先用手动列表（优先）
+    for (int i = 0; i < g_manualObjCount && n < maxCount; i++) {
+        if (zIsOtherPlayerObj(g_manualObjs[i]))
+            zPlayerFromObj(g_manualObjs[i], &out[n++]);
+    }
+    if (n > 0) return n;
+
+    // ② 扫描托管堆范围（OtherPlayerController 实测在 0x16xxxxxxx ~ 0x17xxxxxxx）
+    const uint64_t ranges[][2] = {
+        { 0x160000000ULL, 0x10000000ULL },   // 0x160000000 - 0x170000000
+        { 0x170000000ULL, 0x10000000ULL },   // 0x170000000 - 0x180000000
+    };
+    uint8_t blk[0x1000];
+    for (int r = 0; r < 2 && n < maxCount; r++) {
+        uint64_t start = ranges[r][0], len = ranges[r][1];
+        uint64_t end = start + len;
+        for (uint64_t a = start; a + 8 <= end && n < maxCount; a += sizeof(blk)) {
+            size_t want = sizeof(blk);
+            if (a + want > end) want = (size_t)(end - a);
+            if (rd(a, blk, want) != 0) continue;   // 整块不可读就跳过（不 break）
+            for (size_t off = 0; off + 8 <= want && n < maxCount; off += 8) {
+                uint64_t cand = *(uint64_t *)(blk + off);
+                if (!looksPtr(cand)) continue;
+                if (!zIsOtherPlayerObj(cand)) continue;
+                // 去重
+                int dup = 0;
+                for (int k = 0; k < n; k++) if (out[k].obj == cand) { dup = 1; break; }
+                if (dup) continue;
+                if (zPlayerFromObj(cand, &out[n])) n++;
+            }
+        }
+    }
+    os_log(OS_LOG_DEFAULT, "[wzread] 扫描到 %d 个 OtherPlayerController", n);
+    return n;
 }
